@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from agentkit.control.config import AgentConfig
+from agentkit.control.config import AgentConfig, ComponentSpec
 from agentkit.kernel.budget import IterationBudget
 from agentkit.kernel.context import ContextAssembler, FrozenPrefix
 from agentkit.kernel.events.base import serialize
@@ -25,6 +25,7 @@ from agentkit.stores.memory.types import MemoryContext
 from agentkit.stores.project import resolve_project_id
 from agentkit.stores.session.base import SessionStore
 from agentkit.stores.skill.loader import Catalog, build_catalog
+from agentkit.subsystems.fusion import FusionPolicy, FusionProvider
 from agentkit.tools import register_builtin_tools
 
 
@@ -202,7 +203,18 @@ def _provider_from_config(config: AgentConfig | None) -> ModelProvider:
         return MockProvider()
     if config.model.type == "litellm":
         return build_litellm_provider(LiteLLMParams.model_validate(config.model.params))
+    if config.model.type == "fusion":
+        params = config.model.params
+        workers = [_provider_from_spec(worker) for worker in params["workers"]]
+        policy = FusionPolicy.model_validate(params.get("policy", {}))
+        return FusionProvider(workers, policy=policy)
     raise ValueError(f"unsupported model provider type: {config.model.type}")
+
+
+def _provider_from_spec(spec: dict[str, Any] | ComponentSpec) -> ModelProvider:
+    component = spec if isinstance(spec, ComponentSpec) else ComponentSpec.model_validate(spec)
+    holder = AgentConfig(model=component)
+    return _provider_from_config(holder)
 
 
 def _memory_from_config(config: AgentConfig | None) -> MemoryProvider | None:
