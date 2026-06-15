@@ -45,3 +45,22 @@ async def test_bash_tool_runs_when_permission_allows_under_auto():
     assert result.ok is True
     assert '"stdout": "ok"' in result.body
     assert '"returncode": 0' in result.body
+
+
+async def test_bash_tool_does_not_interpret_shell_wrappers():
+    registry = ToolsRegistry()
+    register_builtin_tools(registry)
+    ctx = TurnCtx(
+        provider=MockProvider(),
+        tools=registry,
+        budget=IterationBudget(1),
+        autonomy=Autonomy.AUTO,
+    )
+
+    result = await dispatch_tool(
+        ctx,
+        ToolCall(id="call_1", name="bash", arguments={"command": "printf 'ok; rm nope'"}),
+    )
+
+    assert result.ok is True
+    assert "ok; rm nope" in result.body
