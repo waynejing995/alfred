@@ -49,6 +49,40 @@ def test_hashedit_rejects_stale_anchor_without_writing(tmp_path):
     assert target.read_text() == "changed\nbeta\n"
 
 
+def test_hashedit_preserves_crlf_line_endings(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_bytes(b"alpha\r\nbeta\r\n")
+    line, digest = _anchor(hashread(str(target)).splitlines()[1])
+
+    hashedit(str(target), [{"line": line, "hash": digest, "content": "bravo"}])
+
+    assert target.read_bytes() == b"alpha\r\nbravo\r\n"
+
+
+def test_hashread_strips_bom_and_hashedit_preserves_it(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_bytes(b"\xef\xbb\xbfalpha\nbeta\n")
+
+    rows = hashread(str(target)).splitlines()
+    assert rows[0].endswith("|alpha")  # BOM not folded into line 1 content
+    assert "﻿" not in rows[0]
+
+    line, digest = _anchor(rows[0])
+    hashedit(str(target), [{"line": line, "hash": digest, "content": "ALPHA"}])
+
+    assert target.read_bytes() == b"\xef\xbb\xbfALPHA\nbeta\n"
+
+
+def test_hashedit_preserves_missing_trailing_newline(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_bytes(b"alpha\nbeta")
+    line, digest = _anchor(hashread(str(target)).splitlines()[1])
+
+    hashedit(str(target), [{"line": line, "hash": digest, "content": "bravo"}])
+
+    assert target.read_bytes() == b"alpha\nbravo"
+
+
 def test_builtin_tool_permission_buckets_are_correct():
     registry = ToolsRegistry()
 
