@@ -2,6 +2,7 @@ import sys
 
 from agentkit.kernel.registries import ToolsRegistry
 from agentkit.mcp import MCPManager, MCPServerConfig
+from agentkit.mcp.manager import MCPToolError
 
 
 def _server_script(tmp_path):
@@ -15,6 +16,10 @@ mcp = FastMCP("demo")
 @mcp.tool()
 def echo(text: str) -> str:
     return "echo:" + text
+
+@mcp.tool()
+def fail() -> str:
+    raise RuntimeError("bad")
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
@@ -37,3 +42,20 @@ async def test_mcp_tool_registers_and_calls(tmp_path):
 
     assert result == "echo:hello"
 
+
+async def test_mcp_tool_errors_raise(tmp_path):
+    manager = MCPManager()
+    registry = ToolsRegistry()
+    await manager.connect_stdio(
+        MCPServerConfig(name="demo", command=sys.executable, args=[str(_server_script(tmp_path))])
+    )
+    await manager.register_tools(registry)
+    try:
+        try:
+            await registry.get("demo.fail").handler()
+        except MCPToolError as exc:
+            assert "bad" in str(exc)
+        else:
+            raise AssertionError("MCPToolError was not raised")
+    finally:
+        await manager.close()

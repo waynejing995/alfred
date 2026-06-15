@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import shlex
 import sys
 from enum import StrEnum
 from typing import Literal
@@ -74,6 +75,7 @@ class PermissionResolver:
                             PermissionRule(pattern="chmod 777 *", permission=Permission.DENY),
                         ],
                         "web_fetch": [PermissionRule(pattern="*", permission=Permission.ASK)],
+                        "mcp": [PermissionRule(pattern="*", permission=Permission.ASK)],
                     },
                 )
             ]
@@ -83,18 +85,23 @@ class PermissionResolver:
         return PermissionResolver([*self.layers, layer])
 
     def resolve(self, *, bucket: str, action: str = "*") -> PermissionDecision:
-        decision = PermissionDecision(
-            permission=Permission.ALLOW,
-            layer="implicit",
-            bucket=bucket,
-            pattern="*",
-        )
+        decision: PermissionDecision | None = None
         for layer in self.layers:
             layer_decision = self._resolve_layer(layer, bucket=bucket, action=action)
             if layer_decision is None:
                 continue
-            if _STRICTNESS[layer_decision.permission] >= _STRICTNESS[decision.permission]:
+            if (
+                decision is None
+                or _STRICTNESS[layer_decision.permission] >= _STRICTNESS[decision.permission]
+            ):
                 decision = layer_decision
+        if decision is None:
+            return PermissionDecision(
+                permission=Permission.DENY,
+                layer="implicit",
+                bucket=bucket,
+                pattern="*",
+            )
         return decision
 
     def assert_allowed(
@@ -165,6 +172,7 @@ class PermissionResolver:
     ) -> PermissionDecision | None:
         rules = layer.rules.get(bucket) or []
         matched: PermissionRule | None = None
+        action = _normalized_action(bucket, action)
         for rule in rules:
             if fnmatch.fnmatch(action, rule.pattern):
                 matched = rule
@@ -180,3 +188,19 @@ class PermissionResolver:
 
 def permission_from_literal(value: Literal["allow", "ask", "deny"] | str) -> Permission:
     return Permission(value)
+
+
+def _normalized_action(bucket: str, action: str) -> str:
+    stripped = action.strip()
+    if bucket != "bash":
+        return stripped
+    try:
+        tokens = shlex.split(stripped, posix=True)
+    except ValueError:
+        return stripped
+    dangerous = {"rm", "sudo", "chmod", "chown", "mkfs", "dd"}
+    for idx, token in enumerate(tokens):
+        command = token.rsplit("/", 1)[-1]
+        if command in dangerous:
+            return " ".join(tokens[idx:])
+    return stripped

@@ -22,10 +22,17 @@ class DistillEngine:
     def run_once(self, *, skill_name: str) -> str | None:
         if not self.gate.allows_auto():
             return None
-        traces = self.trace_store.replay_set(skill_name, min_outcome_quality=0.0)
+        traces = sorted(
+            self.trace_store.replay_set(skill_name, min_outcome_quality=0.0),
+            key=lambda trace: (trace.started_at, trace.trace_id),
+        )
         cursor_key = f"distill:{skill_name}:seen"
-        previous_count = int(self.trace_store.get_meta(cursor_key) or "0")
-        new_traces = traces[previous_count:]
+        cursor = self.trace_store.get_meta(cursor_key)
+        new_traces = [
+            trace
+            for trace in traces
+            if cursor is None or (trace.started_at, trace.trace_id) > _decode_cursor(cursor)
+        ]
         if len(new_traces) < self.batch_min:
             return None
         proposal = Proposal(
@@ -38,7 +45,8 @@ class DistillEngine:
             },
         )
         proposal_id = self.proposals.hold(proposal)
-        self.trace_store.set_meta(cursor_key, str(len(traces)))
+        last = new_traces[-1]
+        self.trace_store.set_meta(cursor_key, _encode_cursor(last.started_at, last.trace_id))
         return proposal_id
 
 
@@ -48,3 +56,11 @@ def _body(skill_name: str, traces) -> str:
         f"Derived from {len(traces)} replay traces. Preserve the behaviors that led to success."
     )
 
+
+def _encode_cursor(started_at: float, trace_id: str) -> str:
+    return f"{started_at:.9f}|{trace_id}"
+
+
+def _decode_cursor(cursor: str) -> tuple[float, str]:
+    raw_started_at, trace_id = cursor.split("|", 1)
+    return float(raw_started_at), trace_id

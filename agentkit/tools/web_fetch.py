@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import socket
 from urllib.parse import urlparse
 
 import httpx
@@ -28,22 +29,30 @@ def _assert_public_url(url: str) -> None:
     if host == "localhost":
         raise ValueError("web_fetch blocked internal host: localhost")
 
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return
+    addresses = _resolve_addresses(host)
+    if not addresses:
+        raise ValueError(f"web_fetch could not resolve host: {host}")
 
-    if _is_blocked_address(address):
-        raise ValueError(f"web_fetch blocked internal address: {address}")
+    for address in addresses:
+        if _is_blocked_address(address):
+            raise ValueError(f"web_fetch blocked internal address: {address}")
 
 
 def _is_blocked_address(address: ipaddress._BaseAddress) -> bool:
-    blocked_networks = [
-        ipaddress.ip_network("127.0.0.0/8"),
-        ipaddress.ip_network("169.254.169.254/32"),
-        ipaddress.ip_network("10.0.0.0/8"),
-        ipaddress.ip_network("192.168.0.0/16"),
-        ipaddress.ip_network("172.16.0.0/12"),
-        ipaddress.ip_network("::1/128"),
-    ]
-    return any(address in network for network in blocked_networks)
+    return (
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address == ipaddress.ip_address("169.254.169.254")
+    )
+
+
+def _resolve_addresses(host: str) -> set[ipaddress._BaseAddress]:
+    try:
+        return {ipaddress.ip_address(host)}
+    except ValueError:
+        pass
+    infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    return {ipaddress.ip_address(info[4][0]) for info in infos}

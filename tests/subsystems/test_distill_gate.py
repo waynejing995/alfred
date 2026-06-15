@@ -33,7 +33,7 @@ def test_distill_holds_proposal_and_persists_high_water_mark(tmp_path):
     assert proposal.payload["trace_ids"] == [trace_id]
     assert proposal.status == "rejected"
     assert second is None
-    assert trace_store.get_meta("distill:reader:seen") == "1"
+    assert trace_store.get_meta("distill:reader:seen").endswith(trace_id)
 
 
 def test_distill_respects_autonomy_off(tmp_path):
@@ -49,4 +49,3 @@ def test_distill_respects_autonomy_off(tmp_path):
 
     assert proposal_id is None
     assert proposals.list_pending() == []
-

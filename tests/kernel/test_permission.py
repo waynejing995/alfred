@@ -35,6 +35,35 @@ def test_ask_headless_downgrades_to_deny():
         )
 
 
+def test_unknown_permission_bucket_defaults_to_deny():
+    with pytest.raises(PermissionDenied):
+        PermissionResolver.default().assert_allowed(
+            tool_name="external",
+            bucket="mystery",
+            autonomy=Autonomy.AUTO,
+        )
+
+
+def test_mcp_defaults_to_ask_and_headless_denies():
+    with pytest.raises(PermissionDenied):
+        PermissionResolver.default().assert_allowed(
+            tool_name="server.tool",
+            bucket="mcp",
+            autonomy=Autonomy.ASSIST,
+            interactive=False,
+        )
+
+
+def test_bash_dangerous_command_is_detected_after_shell_wrapper():
+    with pytest.raises(PermissionDenied):
+        PermissionResolver.default().assert_allowed(
+            tool_name="bash",
+            bucket="bash",
+            action="echo ok; rm -rf /tmp/x",
+            autonomy=Autonomy.AUTO,
+        )
+
+
 def test_strictest_layer_cannot_widen_deny():
     resolver = PermissionResolver(
         [
@@ -50,4 +79,3 @@ def test_strictest_layer_cannot_widen_deny():
     )
 
     assert resolver.resolve(bucket="write").permission is Permission.DENY
-

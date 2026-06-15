@@ -68,12 +68,15 @@ class SQLiteSessionStore(SessionStore):
         return self._db.write(write)
 
     def add_message(self, session_id: str, msg: Message) -> int:
-        seq = self._next_seq(session_id)
         tool_calls = [call.model_dump(mode="json") for call in msg.tool_calls]
         content = _message_content_text(msg)
         timestamp = time.time()
 
         def write(conn):
+            seq = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()["seq"]
             cursor = conn.execute(
                 """
                 INSERT INTO messages (
@@ -296,14 +299,6 @@ class SQLiteSessionStore(SessionStore):
                 )
 
         self._db.write(write)
-
-    def _next_seq(self, session_id: str) -> int:
-        row = self._db.execute(
-            "SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM messages WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        return int(row["seq"])
-
     def _chain_ids(self, session_id: str) -> list[str]:
         out: list[str] = []
         current = session_id

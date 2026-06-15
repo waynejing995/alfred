@@ -30,3 +30,23 @@ def test_seal_trace_writes_terminal_record_once(tmp_path):
     assert trace.sealed is True
     assert sum(record.get("kind") == "seal" for record in records) == 1
 
+
+def test_append_step_rejects_sealed_trace(tmp_path):
+    store = SQLiteTraceStore(tmp_path / "trace.db", project_id="project-a")
+    trace_id = store.start_trace(session_id="session-1", task="task")
+    store.seal_trace(trace_id, outcome="success", outcome_source="verifier")
+
+    try:
+        store.append_step(
+            StepRecord(
+                step_id="step-1",
+                trace_id=trace_id,
+                seq=1,
+                tool_name="hashread",
+                tool_args={},
+            )
+        )
+    except RuntimeError as exc:
+        assert "trace is sealed" in str(exc)
+    else:
+        raise AssertionError("append_step did not reject sealed trace")

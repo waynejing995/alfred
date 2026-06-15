@@ -10,6 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from agentkit.kernel.registries import ToolsRegistry
 
 
+class MCPToolError(RuntimeError):
+    pass
+
+
 class MCPServerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -55,7 +59,7 @@ def _handler(session: ClientSession, tool_name: str):
     async def call(**arguments: Any) -> str:
         result = await session.call_tool(tool_name, arguments)
         if result.isError:
-            return f"MCPError: {_content_text(result.content)}"
+            raise MCPToolError(_content_text(result.content))
         return _content_text(result.content)
 
     return call
@@ -70,4 +74,3 @@ def _content_text(content: list[Any]) -> str:
         else:
             parts.append(str(item))
     return "\n".join(parts)
-

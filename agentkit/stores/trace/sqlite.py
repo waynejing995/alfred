@@ -77,10 +77,18 @@ class SQLiteTraceStore:
         return self._db.write(write)
 
     def append_step(self, step: StepRecord) -> None:
-        body_path = self._body_path(step.trace_id)
         payload = step.model_dump(mode="json")
 
-        def write(_conn):
+        def write(conn):
+            row = conn.execute(
+                "SELECT body_path, sealed FROM traces WHERE trace_id = ?",
+                (step.trace_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"unknown trace_id: {step.trace_id}")
+            if row["sealed"]:
+                raise RuntimeError(f"trace is sealed: {step.trace_id}")
+            body_path = Path(row["body_path"])
             with body_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
@@ -94,9 +102,11 @@ class SQLiteTraceStore:
         assistant_msg_id: int | None = None,
         turn_outcome: str | None = None,
     ) -> None:
-        seq = self._next_turn_seq(trace_id)
-
         def write(conn):
+            seq = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM turns WHERE trace_id = ?",
+                (trace_id,),
+            ).fetchone()["seq"]
             conn.execute(
                 """
                 INSERT OR REPLACE INTO turns (
@@ -431,10 +441,3 @@ class SQLiteTraceStore:
         if row is None:
             raise KeyError(f"unknown trace_id: {trace_id}")
         return Path(row["body_path"])
-
-    def _next_turn_seq(self, trace_id: str) -> int:
-        row = self._db.execute(
-            "SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM turns WHERE trace_id = ?",
-            (trace_id,),
-        ).fetchone()
-        return int(row["seq"])
