@@ -34,7 +34,7 @@ async def turn(request: Request) -> JSONResponse:
     body = await request.json()
     prompt = str(body["prompt"])
     session_id = str(body.get("session_id") or uuid.uuid4())
-    agent = Agent()
+    agent = Agent(config=body.get("config"))
     result = await agent.run(
         prompt,
         stream=True,

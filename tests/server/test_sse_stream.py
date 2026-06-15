@@ -33,3 +33,12 @@ def test_server_events_are_scoped_by_session():
 
     assert replay_text(first_frames) == "mock: first"
     assert first["session_id"] != second["session_id"]
+
+
+def test_server_turn_accepts_agent_config():
+    EVENT_HUB.clear()
+    client = TestClient(app)
+
+    response = client.post("/turn", json={"prompt": "hello", "config": {"model": {"type": "mock"}}})
+
+    assert response.json()["final_message"] == "mock: hello"
