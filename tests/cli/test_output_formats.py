@@ -73,7 +73,12 @@ def test_cli_stream_json_output_is_valid_jsonl() -> None:
 
     assert result.exit_code == 0
     frames = [json.loads(line) for line in result.output.splitlines()]
-    assert [frame["type"] for frame in frames] == ["turn_start", "turn_end", "result"]
+    assert [frame["type"] for frame in frames] == [
+        "session_start",
+        "turn_start",
+        "turn_end",
+        "result",
+    ]
     assert frames[-1]["payload"]["final_message"] == "mock: hello"
 
 

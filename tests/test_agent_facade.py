@@ -16,7 +16,11 @@ async def test_agent_run_uses_mock_provider_by_default() -> None:
     assert isinstance(result, TurnResult)
     assert result.message.content == "mock: hello"
     assert result.usage.total_tokens > 0
-    assert [event["type"] for event in agent.last_events] == ["turn_start", "turn_end"]
+    assert [event["type"] for event in agent.last_events] == [
+        "session_start",
+        "turn_start",
+        "turn_end",
+    ]
 
 
 def test_agent_run_sync_returns_turn_result() -> None:
@@ -37,6 +41,7 @@ async def test_agent_dispatches_supplied_tools() -> None:
     assert len(result.tool_results) == 1
     assert result.tool_results[0].body == "from tool"
     assert [event["type"] for event in agent.last_events] == [
+        "session_start",
         "turn_start",
         "pre_tool",
         "post_tool",

@@ -4,6 +4,7 @@ from agentkit.kernel.providers.config import (
     LiteLLMParams,
     build_litellm_provider,
     resolve_env_value,
+    resolve_headers_env,
 )
 from agentkit.kernel.providers.errors import ConfigError
 
@@ -26,3 +27,8 @@ def test_header_env_interpolation(monkeypatch):
 
     assert resolve_env_value("${HEADER_SECRET}") == "value"
 
+
+def test_headers_env_parses_colon_separated_headers(monkeypatch):
+    monkeypatch.setenv("CUSTOM_HEADERS", "Ocp-Apim-Subscription-Key: secret")
+
+    assert resolve_headers_env("CUSTOM_HEADERS") == {"Ocp-Apim-Subscription-Key": "secret"}
