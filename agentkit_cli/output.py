@@ -43,12 +43,15 @@ def render_stream_frame(frame: dict[str, Any]) -> str:
 
 
 def terminal_payload(result: TurnResult) -> dict[str, Any]:
-    return {
+    payload = {
         "final_message": _message_text(result.message),
         "tool_trace": _tool_trace(result),
         "usage": result.usage.model_dump(mode="json"),
         "stopped": result.stopped,
     }
+    if result.trace_id is not None:
+        payload["trace_id"] = result.trace_id
+    return payload
 
 
 def final_result_frame(result: TurnResult) -> dict[str, Any]:
