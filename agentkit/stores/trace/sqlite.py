@@ -253,6 +253,22 @@ class SQLiteTraceStore:
         ).fetchall()
         return [self._row_to_trace(row) for row in rows]
 
+    def get_meta(self, key: str) -> str | None:
+        row = self._db.execute("SELECT value FROM trace_meta WHERE key = ?", (key,)).fetchone()
+        return str(row["value"]) if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        def write(conn):
+            conn.execute(
+                """
+                INSERT INTO trace_meta(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, value),
+            )
+
+        self._db.write(write)
+
     def _init_schema(self) -> None:
         def write(conn):
             conn.executescript(
@@ -311,6 +327,11 @@ class SQLiteTraceStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_annotations_trace
                     ON annotations(trace_id, kind);
+
+                CREATE TABLE IF NOT EXISTS trace_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
 
                 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
                 """
@@ -417,4 +438,3 @@ class SQLiteTraceStore:
             (trace_id,),
         ).fetchone()
         return int(row["seq"])
-
