@@ -19,6 +19,7 @@ from agentkit.kernel.providers.base import ModelProvider
 from agentkit.kernel.providers.config import LiteLLMParams, build_litellm_provider
 from agentkit.kernel.providers.mock import MockProvider
 from agentkit.kernel.registries import ToolEntry, ToolsRegistry
+from agentkit.tools import register_builtin_tools
 
 
 class Agent:
@@ -43,12 +44,15 @@ class Agent:
         self.last_instruction_manifest: list[dict[str, object]] = []
         self._assembler: ContextAssembler | None = None
 
-    async def run(self, prompt: str) -> TurnResult:
+    async def run(self, prompt: str, *, stream: bool = False, event_sink=None) -> TurnResult:
         bus = EventBus()
         captured: list[dict[str, Any]] = []
 
         def capture(event):
-            captured.append(serialize(event))
+            frame = serialize(event)
+            captured.append(frame)
+            if event_sink is not None:
+                event_sink(frame)
 
         bus.on("*", capture)
         new_session = self._assembler is None
@@ -78,14 +82,14 @@ class Agent:
             autonomy=self.config.autonomy if self.config is not None else Autonomy.ASSIST,
             session_id=self.session_id,
         )
-        result = await run_turn(ctx, prompt)
+        result = await run_turn(ctx, prompt, stream=stream)
         await asyncio.sleep(0)
         self.history = ctx.history
         self.last_events = captured
         return result
 
-    def run_sync(self, prompt: str) -> TurnResult:
-        return asyncio.run(self.run(prompt))
+    def run_sync(self, prompt: str, *, stream: bool = False, event_sink=None) -> TurnResult:
+        return asyncio.run(self.run(prompt, stream=stream, event_sink=event_sink))
 
     def _build_assembler(self) -> ContextAssembler:
         resolved = InstructionResolver().resolve(self.cwd, self.alfred_home)
@@ -130,6 +134,7 @@ def _coerce_tools(
         return tools
     registry = ToolsRegistry()
     if tools is None:
+        register_builtin_tools(registry)
         return registry
     if isinstance(tools, Mapping):
         for name, handler in tools.items():

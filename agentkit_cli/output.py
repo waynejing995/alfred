@@ -35,7 +35,11 @@ def render_json(result: TurnResult) -> str:
 
 def render_stream_json(result: TurnResult, *, events: Iterable[dict[str, Any]]) -> str:
     frames = [*events, final_result_frame(result)]
-    return "\n".join(_dumps(frame) for frame in frames)
+    return "\n".join(render_stream_frame(frame) for frame in frames)
+
+
+def render_stream_frame(frame: dict[str, Any]) -> str:
+    return _dumps(frame)
 
 
 def terminal_payload(result: TurnResult) -> dict[str, Any]:

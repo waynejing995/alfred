@@ -6,7 +6,7 @@ import click
 from loguru import logger
 
 from agentkit import Agent
-from agentkit_cli.output import OutputFormat, render_result
+from agentkit_cli.output import OutputFormat, final_result_frame, render_result, render_stream_frame
 
 
 @click.group()
@@ -45,6 +45,14 @@ def chat(
 ) -> None:
     _configure_logging(verbose)
     agent = Agent(config=_config(provider, model, env_key, base_url, max_tokens))
+    if output_format == "stream-json":
+        result = agent.run_sync(
+            prompt,
+            stream=True,
+            event_sink=lambda frame: click.echo(render_stream_frame(frame)),
+        )
+        click.echo(render_stream_frame(final_result_frame(result)))
+        return
     result = agent.run_sync(prompt)
     rendered = render_result(result, output_format=output_format, events=agent.last_events)
     click.echo(rendered)

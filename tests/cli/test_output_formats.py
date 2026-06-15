@@ -76,9 +76,11 @@ def test_cli_stream_json_output_is_valid_jsonl() -> None:
     assert [frame["type"] for frame in frames] == [
         "session_start",
         "turn_start",
+        "stream_delta",
         "turn_end",
         "result",
     ]
+    assert frames[2]["payload"]["text"] == "mock: hello"
     assert frames[-1]["payload"]["final_message"] == "mock: hello"
 
 

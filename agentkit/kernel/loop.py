@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from agentkit.kernel.budget import IterationBudget
 from agentkit.kernel.context import ContextAssembler
 from agentkit.kernel.events.bus import EventBus
-from agentkit.kernel.events.defs import PostTool, PreTool, TurnEnd, TurnStart
+from agentkit.kernel.events.defs import PostTool, PreTool, StreamDeltaEvent, TurnEnd, TurnStart
 from agentkit.kernel.permission import Autonomy, PermissionDenied, PermissionResolver
 from agentkit.kernel.providers.base import ModelProvider
 from agentkit.kernel.providers.types import Message, ModelResponse, ToolCall, Usage
@@ -25,6 +25,10 @@ class ToolResult(BaseModel):
     body: str
     is_error: bool = False
     refund_ok: bool = False
+
+
+class VetoError(RuntimeError):
+    """A blockable lifecycle subscriber vetoed a tool call."""
 
 
 class TurnResult(BaseModel):
@@ -58,14 +62,19 @@ class TurnCtx:
         return self.assembler.assemble(self.history).messages
 
 
-async def run_turn(ctx: TurnCtx, user_message: str | None = None) -> TurnResult:
+async def run_turn(
+    ctx: TurnCtx,
+    user_message: str | None = None,
+    *,
+    stream: bool = False,
+) -> TurnResult:
     if user_message is not None:
         ctx.history.append(Message(role="user", content=user_message))
     tool_results: list[ToolResult] = []
     last_response: ModelResponse | None = None
     while True:
         await ctx.bus.emit(TurnStart(session_id=ctx.session_id, turn_id=ctx.turn_id))
-        response = await ctx.provider.complete(ctx.assemble_messages(), tools=ctx.tools.tool_defs())
+        response = await _model_response(ctx, stream=stream)
         last_response = response
         ctx.turn_index += 1
         _warn_if_cache_stuck(ctx, response)
@@ -121,6 +130,12 @@ async def dispatch_tool(ctx: TurnCtx, call: ToolCall) -> ToolResult:
             autonomy=ctx.autonomy,
             interactive=ctx.interactive,
         )
+    except PermissionDenied as exc:
+        tool_result = ToolResult(ok=False, body=f"PermissionDenied: {exc}", is_error=True)
+        await _emit_post_tool(ctx, entry.name, tool_result)
+        return tool_result
+
+    try:
         await ctx.bus.emit(
             PreTool(
                 session_id=ctx.session_id,
@@ -129,23 +144,46 @@ async def dispatch_tool(ctx: TurnCtx, call: ToolCall) -> ToolResult:
                 args_ref=json.dumps(call.arguments, sort_keys=True),
             )
         )
+    except Exception as exc:
+        tool_result = ToolResult(ok=False, body=f"VetoError: {exc}", is_error=True)
+        await _emit_post_tool(ctx, entry.name, tool_result)
+        return tool_result
+
+    try:
         result = entry.handler(**call.arguments)
         if inspect.isawaitable(result):
             result = await result
         tool_result = ToolResult(ok=True, body=_stringify_tool_output(result))
-    except PermissionDenied as exc:
-        tool_result = ToolResult(ok=False, body=f"PermissionDenied: {exc}", is_error=True)
     except Exception as exc:
         tool_result = ToolResult(ok=False, body=f"{type(exc).__name__}: {exc}", is_error=True)
+    await _emit_post_tool(ctx, entry.name, tool_result)
+    return tool_result
+
+
+async def _model_response(ctx: TurnCtx, *, stream: bool) -> ModelResponse:
+    if not stream:
+        return await ctx.provider.complete(ctx.assemble_messages(), tools=ctx.tools.tool_defs())
+
+    final_response: ModelResponse | None = None
+    async for delta in ctx.provider.stream(ctx.assemble_messages(), tools=ctx.tools.tool_defs()):
+        if delta.text:
+            await ctx.bus.emit(StreamDeltaEvent(text=delta.text))
+        if delta.final_response is not None:
+            final_response = delta.final_response
+    if final_response is None:
+        raise RuntimeError("streaming provider did not yield a final response")
+    return final_response
+
+
+async def _emit_post_tool(ctx: TurnCtx, tool_name: str, tool_result: ToolResult) -> None:
     await ctx.bus.emit(
         PostTool(
             session_id=ctx.session_id,
             turn_id=ctx.turn_id,
-            tool_name=entry.name,
+            tool_name=tool_name,
             ok=tool_result.ok,
         )
     )
-    return tool_result
 
 
 def _tool_result_message(call: ToolCall, result: ToolResult) -> Message:

@@ -177,9 +177,11 @@ def test_tier0_cli_stream_json_entrypoint_is_replayable():
     assert [frame["type"] for frame in frames] == [
         "session_start",
         "turn_start",
+        "stream_delta",
         "turn_end",
         "result",
     ]
+    assert frames[2]["payload"]["text"] == "mock: tier0 gate"
     assert frames[-1]["payload"]["final_message"] == "mock: tier0 gate"
     assert frames[-1]["payload"]["usage"]["total_tokens"] > 0
 

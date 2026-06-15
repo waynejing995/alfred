@@ -62,3 +62,38 @@ async def test_loop_stops_cleanly_when_budget_exhausted():
     assert result.stopped == "budget"
     assert result.tool_results[0].is_error is True
 
+
+async def test_pre_tool_veto_is_explicit_tool_result():
+    tools = ToolsRegistry()
+    tools.register(
+        name="echo",
+        description="Echo input",
+        parameters={"type": "object", "properties": {"text": {"type": "string"}}},
+        handler=lambda text: text,
+        permission_bucket="read",
+    )
+    provider = MockProvider(
+        [
+            Message(
+                role="assistant",
+                content=None,
+                tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "hi"})],
+            ),
+            "done",
+        ]
+    )
+    bus = EventBus()
+
+    def veto(_event):
+        raise RuntimeError("blocked by test")
+
+    bus.on("pre_tool", veto)
+
+    result = await run_turn(
+        TurnCtx(provider=provider, tools=tools, budget=IterationBudget(3), bus=bus),
+        "hello",
+    )
+
+    assert result.message.content == "done"
+    assert result.tool_results[0].is_error is True
+    assert "VetoError: blocked by test" in result.tool_results[0].body
