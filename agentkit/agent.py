@@ -23,6 +23,7 @@ from agentkit.stores.memory.base import MemoryProvider
 from agentkit.stores.memory.files import FilesMemoryProvider
 from agentkit.stores.memory.types import MemoryContext
 from agentkit.stores.project import resolve_project_id
+from agentkit.stores.session.base import SessionStore
 from agentkit.stores.skill.loader import Catalog, build_catalog
 from agentkit.tools import register_builtin_tools
 
@@ -39,6 +40,8 @@ class Agent:
         alfred_home: str | Path | None = None,
         memory_provider: MemoryProvider | None = None,
         skill_catalog: Catalog | None = None,
+        session_store: SessionStore | None = None,
+        resume_session_id: str | None = None,
     ) -> None:
         self.config = _coerce_config(config)
         self.provider = provider or _provider_from_config(self.config)
@@ -47,8 +50,15 @@ class Agent:
         self.alfred_home = Path(alfred_home).expanduser() if alfred_home is not None else None
         self.memory_provider = memory_provider or _memory_from_config(self.config)
         self.skill_catalog = skill_catalog or _skill_catalog_from_config(self.config)
-        self.history: list = []
-        self.session_id = str(uuid.uuid4())
+        self.session_store = session_store
+        self.session_id = resume_session_id or str(uuid.uuid4())
+        self.history: list = (
+            session_store.get_messages(resume_session_id)
+            if session_store is not None and resume_session_id is not None
+            else []
+        )
+        self._persisted_count = len(self.history)
+        self._session_created = resume_session_id is not None
         self.last_events: list[dict[str, Any]] = []
         self.last_instruction_manifest: list[dict[str, object]] = []
         self.last_memory_blocks: list[dict[str, Any]] = []
@@ -69,6 +79,7 @@ class Agent:
         new_session = self._assembler is None
         if self._assembler is None:
             self._assembler = self._build_assembler(prompt)
+        self._ensure_session(prompt)
         if new_session:
             await bus.emit(
                 SessionStart(
@@ -100,6 +111,7 @@ class Agent:
         result = await run_turn(ctx, prompt, stream=stream)
         await asyncio.sleep(0)
         self.history = ctx.history
+        self._persist_new_messages()
         self.last_events = captured
         return result
 
@@ -139,6 +151,27 @@ class Agent:
         user = _join_blocks(block for block in retrieved.blocks if block.kind == "user")
         facts = _join_blocks(block for block in retrieved.blocks if block.kind == "fact")
         return persona, user, facts
+
+    def _ensure_session(self, prompt: str) -> None:
+        if self.session_store is None or self._session_created:
+            return
+        self.session_id = self.session_store.create_session(
+            source="cli",
+            model=getattr(self.provider, "model", ""),
+            model_config=self.config.model.model_dump(mode="json")
+            if self.config is not None
+            else {"type": "mock"},
+            system_prompt=_system_prompt_text(self._assembler),
+            title=prompt[:80],
+        )
+        self._session_created = True
+
+    def _persist_new_messages(self) -> None:
+        if self.session_store is None:
+            return
+        for message in self.history[self._persisted_count :]:
+            self.session_store.add_message(self.session_id, message)
+        self._persisted_count = len(self.history)
 
 
 def _coerce_config(config: AgentConfig | Mapping[str, Any] | None) -> AgentConfig | None:
@@ -222,6 +255,12 @@ def _coerce_tools(
 
 def _join_blocks(blocks) -> str:
     return "\n\n".join(block.text for block in blocks)
+
+
+def _system_prompt_text(assembler: ContextAssembler | None) -> str:
+    if assembler is None:
+        return ""
+    return "\n\n".join(block.text for block in assembler.prefix.content_blocks())
 
 
 __all__ = ["Agent"]

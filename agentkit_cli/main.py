@@ -6,6 +6,7 @@ import click
 from loguru import logger
 
 from agentkit import Agent
+from agentkit.stores.session.sqlite import SQLiteSessionStore
 from agentkit_cli.output import OutputFormat, final_result_frame, render_result, render_stream_frame
 
 
@@ -33,6 +34,8 @@ def main() -> None:
 @click.option("--env-key", default="ANTHROPIC_API_KEY", show_default=True)
 @click.option("--base-url", envvar="ANTHROPIC_BASE_URL")
 @click.option("--max-tokens", type=int)
+@click.option("--session-db", type=click.Path(dir_okay=False), help="Path to sessions.db.")
+@click.option("--continue", "continue_session", is_flag=True, help="Continue latest CLI session.")
 def chat(
     prompt: str,
     output_format: OutputFormat,
@@ -42,9 +45,21 @@ def chat(
     env_key: str,
     base_url: str | None,
     max_tokens: int | None,
+    session_db: str | None,
+    continue_session: bool,
 ) -> None:
     _configure_logging(verbose)
-    agent = Agent(config=_config(provider, model, env_key, base_url, max_tokens))
+    session_store = SQLiteSessionStore(session_db) if session_db else None
+    resume_id = (
+        session_store.latest_session(source="cli")
+        if session_store and continue_session
+        else None
+    )
+    agent = Agent(
+        config=_config(provider, model, env_key, base_url, max_tokens),
+        session_store=session_store,
+        resume_session_id=resume_id,
+    )
     if output_format == "stream-json":
         result = agent.run_sync(
             prompt,
