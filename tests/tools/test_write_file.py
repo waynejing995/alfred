@@ -13,6 +13,17 @@ def test_write_file_creates_and_overwrites_full_content(tmp_path):
     assert target.read_text() == "second\n"
 
 
+def test_write_file_rejects_paths_outside_root(tmp_path):
+    outside = tmp_path.parent / "outside.txt"
+
+    try:
+        write_file(str(outside), "no", root=str(tmp_path))
+    except ValueError as exc:
+        assert "escapes root" in str(exc)
+    else:
+        raise AssertionError("write_file allowed path outside root")
+
+
 def test_list_dir_lists_directory_entries(tmp_path):
     (tmp_path / "b.txt").write_text("b")
     (tmp_path / "a").mkdir()
