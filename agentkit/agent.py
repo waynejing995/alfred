@@ -19,6 +19,10 @@ from agentkit.kernel.providers.base import ModelProvider
 from agentkit.kernel.providers.config import LiteLLMParams, build_litellm_provider
 from agentkit.kernel.providers.mock import MockProvider
 from agentkit.kernel.registries import ToolEntry, ToolsRegistry
+from agentkit.stores.memory.base import MemoryProvider
+from agentkit.stores.memory.files import FilesMemoryProvider
+from agentkit.stores.memory.types import MemoryContext
+from agentkit.stores.project import resolve_project_id
 from agentkit.tools import register_builtin_tools
 
 
@@ -32,16 +36,19 @@ class Agent:
         config: AgentConfig | Mapping[str, Any] | None = None,
         cwd: str | Path | None = None,
         alfred_home: str | Path | None = None,
+        memory_provider: MemoryProvider | None = None,
     ) -> None:
         self.config = _coerce_config(config)
         self.provider = provider or _provider_from_config(self.config)
         self.tools = _coerce_tools(tools)
         self.cwd = Path(cwd or ".").resolve()
         self.alfred_home = Path(alfred_home).expanduser() if alfred_home is not None else None
+        self.memory_provider = memory_provider or _memory_from_config(self.config)
         self.history: list = []
         self.session_id = str(uuid.uuid4())
         self.last_events: list[dict[str, Any]] = []
         self.last_instruction_manifest: list[dict[str, object]] = []
+        self.last_memory_blocks: list[dict[str, Any]] = []
         self._assembler: ContextAssembler | None = None
 
     async def run(self, prompt: str, *, stream: bool = False, event_sink=None) -> TurnResult:
@@ -57,13 +64,16 @@ class Agent:
         bus.on("*", capture)
         new_session = self._assembler is None
         if self._assembler is None:
-            self._assembler = self._build_assembler()
+            self._assembler = self._build_assembler(prompt)
         if new_session:
             await bus.emit(
                 SessionStart(
                     session_id=self.session_id,
                     epoch=self._assembler.epoch,
-                    manifest={"instructions": self.last_instruction_manifest},
+                    manifest={
+                        "instructions": self.last_instruction_manifest,
+                        "memory": self.last_memory_blocks,
+                    },
                 )
             )
         budget = IterationBudget(
@@ -91,15 +101,31 @@ class Agent:
     def run_sync(self, prompt: str, *, stream: bool = False, event_sink=None) -> TurnResult:
         return asyncio.run(self.run(prompt, stream=stream, event_sink=event_sink))
 
-    def _build_assembler(self) -> ContextAssembler:
+    def _build_assembler(self, prompt: str) -> ContextAssembler:
         resolved = InstructionResolver().resolve(self.cwd, self.alfred_home)
+        persona, user, memory = self._prefetch_memory(prompt)
         self.last_instruction_manifest = resolved.manifest()
         return ContextAssembler(
             FrozenPrefix.build(
                 tools=self.tools.tool_defs(),
+                persona=persona,
+                user=user,
                 project_instructions=resolved.merged,
+                memory=memory,
             )
         )
+
+    def _prefetch_memory(self, prompt: str) -> tuple[str, str, str]:
+        if self.memory_provider is None:
+            self.last_memory_blocks = []
+            return "", "", ""
+        ctx = MemoryContext(project_id=resolve_project_id(self.cwd), resumed_tail=[prompt])
+        retrieved = self.memory_provider.prefetch(ctx)
+        self.last_memory_blocks = [block.model_dump(mode="json") for block in retrieved.blocks]
+        persona = _join_blocks(block for block in retrieved.blocks if block.kind == "persona")
+        user = _join_blocks(block for block in retrieved.blocks if block.kind == "user")
+        facts = _join_blocks(block for block in retrieved.blocks if block.kind == "fact")
+        return persona, user, facts
 
 
 def _coerce_config(config: AgentConfig | Mapping[str, Any] | None) -> AgentConfig | None:
@@ -116,6 +142,15 @@ def _provider_from_config(config: AgentConfig | None) -> ModelProvider:
     if config.model.type == "litellm":
         return build_litellm_provider(LiteLLMParams.model_validate(config.model.params))
     raise ValueError(f"unsupported model provider type: {config.model.type}")
+
+
+def _memory_from_config(config: AgentConfig | None) -> MemoryProvider | None:
+    if config is None or config.memory is None:
+        return None
+    if config.memory.type == "files":
+        params = dict(config.memory.params)
+        return FilesMemoryProvider(**params)
+    raise ValueError(f"unsupported memory provider type: {config.memory.type}")
 
 
 def _permission_from_config(config: AgentConfig | None) -> PermissionResolver:
@@ -158,6 +193,10 @@ def _coerce_tools(
             refundable=entry.refundable,
         )
     return registry
+
+
+def _join_blocks(blocks) -> str:
+    return "\n\n".join(block.text for block in blocks)
 
 
 __all__ = ["Agent"]

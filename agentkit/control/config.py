@@ -25,6 +25,7 @@ class AgentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     model: ComponentSpec
+    memory: ComponentSpec | None = None
     skill_sources: list[ComponentSpec] = Field(default_factory=list)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     permission: list[PermissionLayer] = Field(default_factory=list)
@@ -41,4 +42,3 @@ def resolve_component(spec: ComponentSpec, registry: Registry) -> Any:
         validated = entry.params_model.model_validate(params)
         return entry.factory(validated)
     return entry.factory(**params)
-
