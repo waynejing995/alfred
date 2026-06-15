@@ -59,11 +59,12 @@ ring dependency (it would need to spawn loops, which Ring-3 must not do).
 
 ---
 
-## Minimal harness
+## Minimal Harness, Not Toy Evaluation
 
-The smallest thing that produces a *trustworthy* success/cost delta. Target: the
-core (`runner` + `scorer` ABC + `aggregate`) is **~120 lines**, in spirit with simple-evals
-and mini-SWE-agent. Everything below is the whole module.
+The framework should stay small, but the measurement must be real. "Minimal" means the
+core abstractions are few (`runner` + `scorer` ABC + `aggregate`), not that the result is
+a one-off mock demo. A trustworthy eval run still needs a curated task set, repeats,
+paired confidence intervals, real `trace_id`s, and measured provider `Usage`.
 
 ```python
 # agentkit/eval/types.py  — the eval-side SSoT (pydantic, like AgentConfig)
@@ -140,6 +141,10 @@ class Scorer(Protocol):
    than the toggled subsystem (different model, different task set), the experiment is
    confounded → crash at load (`Experiment.validate()` diffs the two configs and asserts
    exactly one axis changed; see §A/B). This is the eval-harness analogue of `extra=forbid`.
+6. **Mock-backed runs are integration tests, not eval proof.** Unit/integration tests may
+   use `MockProvider` to exercise the harness mechanics. A harness "works" claim requires a
+   live profile: `alfred eval run` over a small curated task set using real providers,
+   repeats >1, trace ids written, usage/cost populated, and CI output in the report.
 
 ---
 
@@ -287,14 +292,21 @@ the path work once" gate (wayne-verify flips ⬜→✅). The eval harness is the
   arm A = single model, arm B = fusion.
 - e2e #8 (goal self-continues) → goal experiment, predicate scorer on goal-met.
 
-A new declared e2e row covers the harness itself:
+A new declared e2e row covers the harness itself (number it after the carried #1-#29
+contract rows, e.g. #30, so it does not collide with L9 negative-path rows):
 
 | # | User path | Process | Data | Entrypoint | Observable (pass = ?) | Status |
 |---|---|---|---|---|---|---|
-| 18 | Dev runs an A/B experiment (kernel-only vs +subsystem) over a task set; gets a delta report | `alfred eval run experiments/X.yaml` | tiny task set + 2-arm config | `alfred` CLI | `report.md` prints per-arm pass-rate + cost + the A↔B delta with a CI; each rollout links a real `trace_id`; both arms ran the SAME tasks (parity guard logged) | ⬜ |
+| 30 | Dev runs an A/B experiment (kernel-only vs +subsystem) over a task set; gets a delta report | `alfred eval run experiments/X.yaml` | tiny task set + 2-arm config | `alfred` CLI | `report.md` prints per-arm pass-rate + cost + the A↔B delta with a CI; each rollout links a real `trace_id`; both arms ran the SAME tasks (parity guard logged) | ⬜ |
 
 `E2E: none` clarifier to add: *the scorer ABC / aggregation math are internal; observable
-only via row #18's report.*
+only via the eval row's report.*
+
+**Test naming contract:** any eval test under `tests/e2e/` must use real LLM calls. Mock
+tasks belong under `tests/integration/` and can only prove harness plumbing. The live eval
+smoke should be tiny (for cost) but real: at least two arms, repeats >1, one objective
+scorer, trace ids in `rollouts.jsonl`, usage/cost fields populated, and a markdown report
+with paired CI.
 
 ---
 

@@ -647,13 +647,16 @@ atomically-coupled group is noted.
     model recall (KB `llm-prompt-and-boundary-contracts`). `hashread`+`hashedit` = paired system.
   - **write_file:** create/overwrite full content. Both `hashedit` + `write_file` ride ONE unified
     `write` permission bucket (default ask) — tools separate, permission unified (T6, opencode-proven).
-  - **fff (T4/T5):** subprocess the bundled binary (located via `agentkit-fff-<platform>`); frecency
+  - **fff (T4/T5):** native bundled companion backend (located via `agentkit-fff-<platform>`); frecency
     search; `read` permission = allow. Fallback chain: bundled fff absent/unsupported → ripgrep →
-    pure-Python grep, fail-loud WARNING. fff is NOT a Python dep (subprocess only).
+    pure-Python grep, fail-loud WARNING for degraded search. The fallback exists for resilience but
+    does not satisfy the bundled-fff unit.
   - **bash:** `ask` default; deny patterns `rm *`/`sudo *`/etc (pattern last-match-wins).
-  - **web_fetch (T7):** httpx, built-in; default `ask`; **hard deny patterns: `localhost`,
-    `127.0.0.1`, `169.254.169.254` (metadata), `10./192.168./172.16.` private ranges** — protects
-    the local key-proxy `127.0.0.1:8888` from SSRF; fetched content marked untrusted on injection.
+  - **web_fetch (T7):** httpx, built-in; default `ask`; only `http/https`; normalize URL,
+    resolve DNS before connect, block every resolved loopback/link-local/private/multicast/
+    reserved/metadata address for IPv4+IPv6, re-check every redirect, cap response size/time,
+    and mark fetched content untrusted on injection. This protects the local key-proxy
+    `127.0.0.1:8888` from SSRF; string deny patterns alone are insufficient.
 
   **Patterns to follow:**
   - oh-my-pi hashline edit (default mutation surface, benchmark-validated); opencode unified write
@@ -667,8 +670,9 @@ atomically-coupled group is noted.
   - Error path: `bash rm -rf` → deny; `web_fetch http://127.0.0.1:8888` → deny (SSRF guard).
 
   **Verification:**
-  - All 7 baseline tools registered with correct default permission; real bundled fff binary path
-    works on the current platform or the unit is explicitly marked fallback-only; fff fallback chain
+  - All 7 baseline tools registered with correct default permission; real bundled fff backend works
+    on the current platform (backend=`fff` in the native test); fallback-only does NOT satisfy Unit
+    7b and must be split into a temporary TODO if native fff is unavailable. fff fallback chain
     works; web_fetch SSRF denylist blocks internal addresses; hashedit rejects stale edits.
 
   **Integration/regression test:** `tests/integration/test_tool_baseline_e2e.py` — exercise the real tools end-to-end:
@@ -1166,7 +1170,7 @@ atomically-coupled group is noted.
 
   **Approach:**
   - Discovered tools → `ToolDef`+handler entries (indistinguishable from local). Config key
-    `mcp_servers`, discriminated union on `transport` (`StdioMCPParams`/`HttpMCPParams`,
+    `mcp`, discriminated union on `transport` (`StdioMCPParams`/`HttpMCPParams`,
     extra=forbid). HTTP auth via `headers_env_key` (env-var NAME, T7/secret hygiene).
   - **anyio FILO teardown:** single `AsyncExitStack` on one owning task, every transport +
     `ClientSession` via `enter_async_context`; `aclose()` unwinds FILO. Never per-server stacks.
@@ -1414,7 +1418,8 @@ atomically-coupled group is noted.
 
   **Approach:**
   - Consumer (NOT Ring-3): drives the public SDK `Agent`/`agent.run()` like the CLI; a
-    subsystem can't spawn loops. Core (`runner`+`scorer`+`aggregate`) ~120 lines.
+    subsystem can't spawn loops. Keep the framework small, but the evaluation is not toy:
+    curated tasks, repeats, paired CI, trace ids, and measured provider `Usage` are required.
   - `Experiment(name, arms≥2 [arm0=baseline], task_set, scorer, repeats=5, seed=0)`; `validate()`
     parity guard (deep-diff arms vs baseline, differing keys ⊆ declared `varies:` → else crash =
     eval analogue of `extra=forbid`).
@@ -1438,10 +1443,10 @@ atomically-coupled group is noted.
   **Integration/regression test:** `tests/integration/test_eval_harness_e2e.py` — run the real `alfred eval run` over a
   2-arm experiment (kernel-only vs +subsystem) using `MockProvider`-backed tasks. Assert per-arm
   scores and a cost delta are produced, and that the parity guard crashes when the two arms differ
-  on more than one axis.
+  on more than one axis. This proves harness plumbing only; it is NOT an e2e proof.
 
-  **E2E contract rows:** #29-adjacent — eval is itself observable via `alfred eval run`
-  (a future e2e row; not in the carried #1-#29 set — note as a follow-up, do not invent a row here).
+  **E2E contract rows:** #30 — live `alfred eval run` over a tiny curated 2-arm task set
+  using real providers, repeats >1, trace ids, usage/cost, paired CI, and report artifacts.
 
 ### Milestone E — Bundled Skills + Self-Edit
 
@@ -1492,7 +1497,8 @@ atomically-coupled group is noted.
 > negative-path rows added per the Eng review (Decision #31, spec §13 L9); rows #23-#24 are
 > the layered-instruction rows (layered-instructions decision log, spec §3.5); rows #25-#28 are
 > the tools-permission rows (tools-permission decision log, spec §3.6); row #29 is the
-> CLI JSON-output row (cli-json-output decision log, spec §3.7). e2e runs REAL
+> CLI JSON-output row (cli-json-output decision log, spec §3.7); row #30 is the eval-harness
+> live A/B smoke. e2e runs REAL
 > LLMs across BOTH vendors (Anthropic + OpenAI/Azure via local env / key-proxy
 > `127.0.0.1:8888`). Unit/integration tests in the units above are NOT this gate.
 >
@@ -1515,7 +1521,7 @@ atomically-coupled group is noted.
 >   different egress paths; the SSRF denylist governs the tool only, never the provider.
 > - **Verify profile vs local regression:** normal `uv run pytest` runs unit/integration tests and
 >   skips live-provider tests by default. `wayne-verify` runs `ALFRED_RUN_REAL_E2E=1 uv run pytest
->   tests/e2e` plus any row-specific setup, and must treat rows #1/#17/#29 as non-skippable:
+>   tests/e2e` plus any row-specific setup, and must treat rows #1/#17/#29/#30 as non-skippable:
 >   Anthropic and OpenAI/Azure both run, row #1 executes a real CLI hashread tool call, row #17
 >   proves cache hits, row #29 proves stream deltas and replay. Every file under `tests/e2e/`
 >   must issue at least one real LLM call.
@@ -1551,6 +1557,7 @@ atomically-coupled group is noted.
 | 27 | Agent edits a file with `hashedit`, but the line changed since it was read; the stale edit is rejected | `alfred chat` | a real file mutated between read and edit | `alfred` CLI | `hashedit` **rejects the stale edit** (hash mismatch) rather than corrupting the file; agent re-reads and retries | ⬜ |
 | 28 | Agent is induced to `web_fetch` an internal address; the SSRF guard blocks it | `alfred chat` | `web_fetch http://127.0.0.1:8888` (the key-proxy) | `alfred` CLI | the fetch is **denied by the SSRF denylist** (internal/metadata address); the key-proxy is never reached; log names the blocked address | ⬜ |
 | 29 | Dev runs a turn with `--output-format stream-json` and reconstructs it offline | `alfred chat --output-format stream-json` | a question that triggers a tool call | `alfred` CLI | stdout is **valid JSONL** (one `{type,payload}` event per line) and includes `stream_delta` frames for token output; a minimal replay reconstructs the full turn (user input + token reply + tool name/args/result) matching `text`-mode output — symmetric with #12 SSE | ⬜ |
+| 30 | Dev runs a live A/B eval experiment and gets a statistically legible report | `alfred eval run experiments/live-smoke.yaml` | tiny curated task set + two real-provider arms | `alfred` CLI | `report.md` and `findings.json` show per-arm pass-rate, usage/cost, paired CI, trace ids for each rollout, repeats >1, and parity guard evidence; at least one real LLM call occurs per rollout | ⬜ |
 
 ## Dead Code / Legacy Cleanup
 
@@ -1597,7 +1604,7 @@ atomically-coupled group is noted.
 
 | Risk | Mitigation |
 |------|------------|
-| LiteLLM kwarg/Azure Responses-API uncertainty (`api_base`/`extra_query`/`wire_api`) blocks e2e #1 | Pin at e2e #1 against the live `127.0.0.1:8888` gateway; isolate in `litellm_provider.py` only so a fix touches one file (Unit 4). |
+| LiteLLM kwarg/Azure Responses-API routing (`api_base`/`extra_query`/`wire_api`) blocks e2e #1 | `wire_api="responses"` is confirmed by the real Codex config; pin exact LiteLLM kwargs at e2e #1 against the live `127.0.0.1:8888` gateway and isolate in `litellm_provider.py` only so a fix touches one file (Unit 4). |
 | Concurrent budget decrement race under subagents | Await-free synchronous `reserve()`/`refund()`; two-counter reconcile invariant asserted in tests (Unit 1, e2e #19). |
 | Async subscriber raises crash the loop | Background dispatch isolates per-subscriber + emits `subscriber.error` + re-entrancy guard (Unit 2, e2e #18). |
 | Prompt-cache silently not hitting = 10× cost | Frozen-prefix discipline + usage-number assertion + runtime stuck-at-zero WARNING (Units 3/4, e2e #17). |

@@ -51,18 +51,18 @@ scattered.
 ```python
 async def run_turn(ctx: TurnCtx) -> TurnResult:
     while True:
-        ctx.bus.emit("turn_start", TurnStart(turn_id=ctx.turn_id))   # async dispatch
+        await ctx.bus.emit(TurnStart(turn_id=ctx.turn_id))           # event policy decides dispatch
         resp = await ctx.provider.complete(ctx.assemble_messages())   # the ONLY await-heavy call
         ctx.history.append(resp.message)
         calls = resp.tool_calls
         if not calls:
-            ctx.bus.emit("turn_end", TurnEnd(turn_id=ctx.turn_id))
+            await ctx.bus.emit(TurnEnd(turn_id=ctx.turn_id))
             return TurnResult(message=resp.message)
         for call in calls:
             grant = ctx.budget.reserve(ctx.agent_id, n=1)            # SYNC, atomic — see H1
             if grant is None:
                 ctx.history.append(tool_result(call, BUDGET_EXHAUSTED_MSG, is_error=True))
-                ctx.bus.emit("budget_exhausted", BudgetExhausted(agent_id=ctx.agent_id))
+                await ctx.bus.emit(BudgetExhausted(agent_id=ctx.agent_id))
                 return TurnResult(message=resp.message, stopped="budget")
             result = await _dispatch(ctx, call)                       # never raises to loop
             if grant.refundable and result.refund_ok:
@@ -70,15 +70,16 @@ async def run_turn(ctx: TurnCtx) -> TurnResult:
             ctx.history.append(tool_result(call, result))
 
 async def _dispatch(ctx, call) -> ToolResult:
-    ctx.bus.emit_sync("pre_tool", PreTool(...))   # sync: a subscriber may raise to veto
     try:
+        await ctx.bus.emit(PreTool(...))          # blockable: subscriber may raise ToolVeto
         out = await ctx.tools[call.name].handler(**call.args)
         res = ToolResult(ok=True, body=out)
-    except VetoError:
-        raise                                      # veto is a control signal, propagate
+    except ToolVeto as e:
+        # veto is a control signal, not a tool fault and not a generic exception.
+        res = ToolResult(ok=False, body=str(e), is_error=True, status="vetoed")
     except Exception as e:                         # tool fault → feed back, do NOT crash
         res = ToolResult(ok=False, body=f"{type(e).__name__}: {e}", is_error=True)
-    ctx.bus.emit("post_tool", PostTool(...))
+    await ctx.bus.emit(PostTool(...))
     return res
 ```
 
@@ -255,11 +256,12 @@ The loop passes `result.refund_ok` through; the kernel does not hard-code the po
 
 ### H2 / async-subscriber note (cross-ref only)
 
-`budget_warning`/`budget_exhausted` are emitted from inside `reserve()` (sync context).
-They are *notification* events, dispatched **async** (background-trigger class, Decision
-#7) so a slow subscriber can't stall a reservation. `pre_tool` stays **sync** (vetoable).
-Subscriber error isolation is owned by kernel:event-bus (H2) — out of scope here, but the
-budget emits via the bus's normal path, never inline-awaiting a subscriber.
+`budget_warning`/`budget_exhausted` are decided inside `reserve()` (sync context), but the
+budget object does not call async bus APIs from that no-await critical section. Instead,
+`reserve()` records pending notification events (or returns them with the `Grant`/failure),
+and the loop publishes them immediately after the critical section. They are background
+notification events, so a slow subscriber can't stall reservation. `pre_tool` stays
+blockable/vetoable and is awaited by `_dispatch`.
 
 ---
 
@@ -283,9 +285,8 @@ emit point per event-type — no per-agent duplication or drift.
 - **Why this is consistent:** because the flag-flip and the emit decision both happen
   inside the await-free critical section, the event ordering is total and matches the true
   budget timeline. There is no window where two tasks each "think" they crossed the
-  threshold first. Emission itself (handing the event to the bus) is the only thing that
-  could touch async subscribers, and that's a fire-and-forget enqueue, not an in-line
-  await inside `reserve` — keeping the critical section pure.
+  threshold first. Publishing itself happens after the await-free `reserve()` critical
+  section; the bus then supervises background subscribers without blocking the reserver.
 
 Concrete payloads (pydantic, per spec §3.1 naming):
 

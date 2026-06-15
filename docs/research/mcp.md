@@ -153,6 +153,7 @@ async def register_server_tools(session, registry, *, server_name: str, autonomy
             tooldef=_alfred_tooldef(t),
             handler=_make_handler(session, t.name),
             source=f"mcp:{server_name}",       # provenance for collision WARNING + trace
+            permission_bucket="mcp",            # default ask unless config narrows per server/tool
             refundable=False,                  # network tool, not execute_code-class (#budget)
         )
         registry.add(entry)                    # add() emits the collision WARNING (below)
@@ -167,6 +168,11 @@ Notes:
   converted to tool-result messages, never crash the loop").
 - `source="mcp:<server>"` is the provenance tag used for collision reporting and trace
   fidelity (trace store #17).
+- **Permission default:** every MCP tool resolves to `ask` by default. A dynamic remote tool
+  is not equivalent to local read, even if its schema looks harmless. Config may explicitly
+  narrow/allow by provenance key (`mcp:<server>:<tool>` or `mcp:<server>:*`), and the
+  resolved permission appears in the session-start `-v` manifest. Registering an MCP tool
+  without a known permission bucket is a config/registry error, not implicit allow.
 
 ---
 
@@ -219,12 +225,12 @@ entirely — cleaner but uglier tool names in the prompt; left as an open questi
 ## Config schema
 
 Per Decision #13, mcp is an assembly-type component declared `{type, params}`, layered like
-everything else (bundled → `~/.myagent` → `./agent.yaml` → env/code), `extra=forbid`. mcp
-servers are a *list of tool sources*, so the natural shape is a top-level `mcp_servers` list
-(sibling to `skill_sources`), each entry `{type: mcp, params: {...}}`:
+everything else (bundled → `~/.alfred/config.yaml` → `./agent.yaml` → env/code),
+`extra=forbid`. The canonical config key is `mcp` (matching `AgentConfig`), a list of tool
+sources where each entry is `{type: mcp, params: {...}}`:
 
 ```yaml
-mcp_servers:
+mcp:
   - type: mcp
     params:
       name: filesystem            # logical id → provenance "mcp:filesystem", collision msgs

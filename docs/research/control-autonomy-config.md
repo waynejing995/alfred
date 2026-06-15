@@ -187,7 +187,7 @@ class AgentConfig(BaseModel):
     model: ComponentSpec                                    # single | fusion | router (models registry)
     skill_sources: list[SkillSourceSpec] = Field(           # ordered = precedence (#12)
         default_factory=lambda: [SkillSourceSpec(type="dir", params={"path": "./skills"}),
-                                 SkillSourceSpec(type="dir", params={"path": "~/.myagent/skills"}),
+                                 SkillSourceSpec(type="dir", params={"path": "~/.alfred/skills"}),
                                  SkillSourceSpec(type="bundled", params={})])
     mcp: list[ComponentSpec] = Field(default_factory=list)  # each {type: mcp, params:{transport,...}}
     middleware: list[ComponentSpec] = Field(default_factory=list)  # 5th registry (#30a)
@@ -272,7 +272,7 @@ Following 2026 pydantic-settings practice (custom `settings_customise_sources` o
 across layers), Alfred composes four layers, **later overrides earlier** (§6.2):
 
 ```
-bundled defaults (shipped) → ~/.myagent/config.yaml → ./agent.yaml → env / code overrides
+bundled defaults (shipped) → ~/.alfred/config.yaml → ./agent.yaml → env / code overrides
    (lowest precedence)                                                  (highest precedence)
 ```
 
@@ -391,6 +391,46 @@ event-bus → SSE /events → CLI/TUI renders → human '/distill accept <id>' �
 In `assist` with no attached human, proposals simply sit `pending` (visible via `/… list`) — never
 lost, never auto-applied. This is the "gate is just a held proposal keyed by id" primitive the distill
 research references; it lives HERE (control plane) so distill/evolve/goal don't each reinvent it.
+
+---
+
+## Tool Permission Confirm Path
+
+Tool-call `ask` is **not** the durable auto-loop proposal flow above. A normal tool call
+(`bash`, `write_file`, `web_fetch`, etc.) happens inside a live model turn, so it uses a
+synchronous `ConfirmHandler`:
+
+```python
+class ToolCallContext(BaseModel):
+    agent_id: str
+    tool_name: str
+    permission_layers: list[PermissionLayer]
+    skill_scopes: list[str] = []     # explicit executing skills only
+    autonomy: Autonomy
+    headless: bool
+```
+
+Semantics:
+
+- `deny` is a hard wall under every autonomy level.
+- `allow` runs immediately.
+- `ask` + `autonomy=auto` runs immediately.
+- `ask` + interactive `assist` calls `ConfirmHandler.confirm(tool_call)` and blocks that
+  dispatch until the human answers.
+- `ask` + `autonomy=off` or headless `assist` is denied with a default-visible log
+  (`ask downgraded to deny: no interactive channel`). It is not stored as a pending
+  `Proposal`.
+
+This keeps two confirmation surfaces distinct: tool `ask` is a synchronous dispatch gate;
+distill/evolve/dream/goal proposals are durable auto-loop actions that may remain pending
+in a daemon.
+
+Skill `allowed-tools` enters through `ToolCallContext.skill_scopes`. Viewing a skill via
+`skill_view(name)` loads L1 text and emits `skill_used`; it does **not** permanently alter
+the session's permissions. Only an explicit skill invocation/worker pushes a skill scope,
+and the resolver adds that skill's `allowed-tools` as a narrowing layer for that scope.
+Multiple active scopes compose by strictest permission; no skill can widen the base config
+or a handoff tool-scope.
 
 ---
 

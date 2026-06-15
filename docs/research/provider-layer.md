@@ -68,6 +68,13 @@ A deterministic `MockProvider` (canned responses / scripted tool calls) lives be
 LiteLLMProvider. It lets every other module's unit test run with zero network and no
 litellm import — the e2e rows (#1, #17) cover the *real* litellm path; units use Mock.
 
+**Test naming contract:** mock/scripted provider tests belong under `tests/unit`,
+`tests/kernel`, or `tests/integration`. Anything under `tests/e2e/` is a live-provider
+contract test and must issue at least one real LLM call through the configured provider
+path. In particular, e2e rows #1/#17/#29 are non-skippable in the
+`ALFRED_RUN_REAL_E2E=1` profile and must exercise both Anthropic and OpenAI/Azure where
+the row says both vendors.
+
 ---
 
 ## ABC + message types sketch
@@ -80,6 +87,7 @@ already normalizes to — this keeps conversion near-trivial while still being *
 # agentkit/kernel/providers/types.py  — Alfred-owned, zero litellm import
 from __future__ import annotations
 from typing import Literal, Any
+from typing import Literal
 from pydantic import BaseModel, Field
 
 Role = Literal["system", "user", "assistant", "tool"]
@@ -116,7 +124,9 @@ class Usage(BaseModel):
     completion_tokens: int = 0
     total_tokens: int = 0
     cached_tokens: int = 0             # cache READ hits (see §cache below)
+    cache_read_input_tokens: int = 0   # native Anthropic read hits when surfaced
     cache_creation_tokens: int = 0     # Anthropic cache WRITE (0 on OpenAI)
+    cache_creation_input_tokens: int = 0  # raw/native alias kept for trace/debug
 
 class ModelResponse(BaseModel):
     message: Message                   # the assistant message (text + tool_calls)
@@ -131,6 +141,7 @@ class StreamDelta(BaseModel):
     tool_call_fragment: ToolCallFragment | None = None
     usage: Usage | None = None                    # present only on the final chunk
     finish_reason: str | None = None
+    final_response: ModelResponse | None = None   # terminal SSoT response after stream drains
 
 class ToolCallFragment(BaseModel):
     index: int                          # which tool call this fragment belongs to
@@ -319,12 +330,16 @@ def _to_usage(u) -> Usage:
     details = d.get("prompt_tokens_details") or {}
     cached = (details.get("cached_tokens") if isinstance(details, dict) else
               getattr(details, "cached_tokens", 0)) or 0
+    native_cache_read = d.get("cache_read_input_tokens", 0) or 0
+    native_cache_write = d.get("cache_creation_input_tokens", 0) or 0
     return Usage(
         prompt_tokens=d.get("prompt_tokens", 0),
         completion_tokens=d.get("completion_tokens", 0),
         total_tokens=d.get("total_tokens", 0),
-        cached_tokens=cached,                                  # READ hits, both vendors
-        cache_creation_tokens=d.get("cache_creation_input_tokens", 0) or 0,  # Anthropic WRITE
+        cached_tokens=cached or native_cache_read,             # normalized READ hits
+        cache_read_input_tokens=native_cache_read,             # raw when available
+        cache_creation_tokens=native_cache_write,              # Anthropic WRITE
+        cache_creation_input_tokens=native_cache_write,        # raw alias for trace/debug
     )
 ```
 
@@ -336,9 +351,10 @@ Field-name reconciliation (the thing Decision #29 demanded we verify):
 | cache write | `usage.cache_creation_input_tokens` | `usage.cache_creation_input_tokens` | n/a (auto, not reported) |
 
 Because Alfred goes **through litellm**, the boundary reads the normalized
-`prompt_tokens_details.cached_tokens` for cache-read on both vendors. A future native
-AnthropicSDKProvider would instead read `cache_read_input_tokens` — that mapping lives in
-*that* impl, not in core. Core only ever sees `Usage.cached_tokens`.
+`prompt_tokens_details.cached_tokens` for cache-read on both vendors, and also preserves
+top-level `cache_read_input_tokens` / `cache_creation_input_tokens` when LiteLLM surfaces
+the native Anthropic fields. Core logic should use `Usage.cached_tokens`; trace/debug can
+inspect the raw/native fields.
 
 **Runtime fail-loud (spec §7 / #29c):** the loop (not the provider) compares turn-2
 `Usage.cached_tokens` against the frozen-prefix size; if it stays 0 across a `--continue`
@@ -393,16 +409,15 @@ async def stream(self, messages, tools=None, tool_choice=None, **params):
         raise self._map_exc(e) from e
     # reassemble the SSoT message for the loop to persist (Decision #15: delta not persisted)
     full = litellm.stream_chunk_builder(chunks, messages=kw["messages"])
-    self._last_full = self._to_response(full)     # loop reads provider.last_full after drain
+    yield StreamDelta(final_response=self._to_response(full))
 ```
 
 `litellm.stream_chunk_builder(chunks, messages=...)` reassembles fragments (including
 partial tool-call argument strings) into a normal `ModelResponse` — reuse it rather than
 hand-rolling fragment concatenation. The loop drains `stream()` for the TUI projection,
-then reads the assembled full response to persist the message + read usage. (Exact handoff
-of the assembled response — return value vs. attribute vs. a terminal `StreamDelta` — is an
-open question below; the attribute sketch above is the least-surprising option but couples
-caller to "drain fully first".)
+then reads the terminal `StreamDelta.final_response` to persist the message + read usage.
+Do not use a provider instance attribute such as `_last_full`; it is concurrency-unsafe if
+one provider instance streams two turns at once.
 
 ### Exception mapping
 
@@ -465,6 +480,8 @@ class LiteLLMParams(BaseModel, extra="forbid"):
     http_headers: dict[str, str] = Field(default_factory=dict)
     query_params: dict[str, str] = Field(default_factory=dict)  # e.g. {"api-version": "..."}
     api_version: str | None = None               # Azure convenience (alt to query_params)
+    wire_api: Literal["chat_completions", "responses"] = "chat_completions"
+    reasoning_effort: str | None = None          # forwarded for Responses-capable gateways
     extra: dict = Field(default_factory=dict)    # temperature, max_tokens, timeout, num_retries
 
 class ProviderConfig(BaseModel, extra="forbid"):
@@ -491,7 +508,9 @@ def build_litellm_provider(p: LiteLLMParams) -> LiteLLMProvider:
     if p.api_version and "api-version" not in qp:
         qp["api-version"] = p.api_version
     return LiteLLMProvider(model=p.model, api_key=api_key, base_url=p.base_url,
-                           http_headers=p.http_headers, query_params=qp, extra=p.extra)
+                           http_headers=p.http_headers, query_params=qp,
+                           wire_api=p.wire_api, reasoning_effort=p.reasoning_effort,
+                           extra=p.extra)
 ```
 
 ### Worked examples (mapping the two REAL local setups — secrets redacted)
@@ -515,10 +534,11 @@ Azure/OpenAI via the key-proxy (mirrors the real `~/.codex/config.toml` block, s
 model:
   type: litellm
   params:
-    model: azure/gpt-5.5
-    env_key: AZURE_OPENAI_API_KEY
-    base_url: http://127.0.0.1:8888/openai
-    query_params: {api-version: "2025-04-01-preview"}
+	    model: azure/gpt-5.5
+	    env_key: AZURE_OPENAI_API_KEY
+	    base_url: http://127.0.0.1:8888/openai
+	    wire_api: responses
+	    query_params: {api-version: "2025-04-01-preview"}
     http_headers:
       Ocp-Apim-Subscription-Key: SUBSCRIPTION_KEY_ENV   # see note
       user: jingwech
@@ -572,6 +592,9 @@ model:
   a **flat** `env` block (one key per var) — exactly the format #26 rejected in favor of
   Codex's structured `[model_providers.x]` block, because the flat form has no place for
   per-provider `query_params`/`http_headers`/`wire_api`.
+- Do **not** treat Claude Code's top-level `"model"` field or display aliases such as
+  `opus[1m]` as Alfred/LiteLLM model ids. Alfred chooses the real model from its own config
+  or `ALFRED_REAL_MODEL`; the Claude settings file is only the base-url/key source.
 
 ---
 
@@ -605,14 +628,11 @@ model:
 
 ## Open questions
 
-1. **Stream → full-response handoff.** `stream()` must still produce the SSoT
-   `ModelResponse`. Three options: (a) provider stashes `self._last_full` after drain
-   (sketched; couples caller to drain-fully-first, and is not concurrency-safe if one
-   provider instance streams two turns at once); (b) the final `StreamDelta` carries the
-   whole assembled `ModelResponse`; (c) `stream()` returns an object exposing both the async
-   iterator and an awaitable `.final()`. (c) is cleanest but heavier. **Pick before
-   implementing the loop's stream path.** Note (a) breaks if fusion shares one streaming
-   provider instance across workers — likely (b) or (c).
+1. **Stream → full-response handoff — RESOLVED.** The final yielded `StreamDelta` carries
+   `final_response: ModelResponse`. The loop/CLI drains `provider.stream()`, emits
+   `stream_delta` frames as they arrive, then persists/aggregates the terminal
+   `final_response`. Provider instance attributes such as `_last_full` are forbidden because
+   they are concurrency-unsafe.
 
 2. **Retry ownership.** litellm offers `num_retries`/`fallbacks`. Putting retry in the
    provider hides failures from iteration-budget accounting (H1) and from fusion's
@@ -632,12 +652,11 @@ model:
    to no-op the unknown `cache_control`. Verify litellm silently drops `cache_control` for
    OpenAI rather than erroring; if it errors, the explicit `cache_style` param is required.
 
-5. **Reasoning-effort / `wire_api: responses`.** The real Codex config uses
-   `wire_api = "responses"` + `model_reasoning_effort`. Does the local Azure proxy require
-   the OpenAI *Responses* API rather than Chat Completions? litellm routes Chat Completions
-   by default. If the gateway only speaks Responses, we need litellm's responses support or
-   a `wire_api` param. Verify against the live `127.0.0.1:8888` gateway during e2e #1
-   (OpenAI vendor pass).
+5. **Reasoning-effort / `wire_api: responses` — RESOLVED for the local Azure proxy.** The
+   real Codex config declares `wire_api = "responses"` + `model_reasoning_effort`, so
+   Alfred must support a Responses API route for the OpenAI/Azure worker. Chat Completions
+   is still the default for ordinary LiteLLM configs, but e2e #1's OpenAI pass must use
+   `wire_api="responses"` against `127.0.0.1:8888/openai`.
 
 6. **`tool_choice="required"` portability.** Anthropic vs OpenAI express forced tool use
    differently; litellm normalizes, but confirm "required" round-trips on both vendors

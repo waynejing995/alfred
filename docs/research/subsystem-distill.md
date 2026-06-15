@@ -139,8 +139,9 @@ confirm-required gate (below). e2e #14 asserts distill does not trigger under `a
 material*. Trigger condition = `unmined_trace_count ≥ batch_min` (config, default ~50, tracking
 the paper's ~200-trajectory evolving-set scale but lower for an MVP). Below threshold → silent
 skip (DEBUG), same signal-to-noise discipline as evolve's missing-trace filter (Decision #20b).
-A high-water mark (last-mined trace id) in distill's own small state file makes "unmined" cheap
-to compute and prevents re-mining the same traces.
+A high-water mark (last-mined trace id) lives in small `trace.db` meta tables (not a
+new DB and not a private state file), making "unmined" cheap to compute and preventing
+re-mining the same traces across daemon restarts.
 
 ### Batch size + parallelism config
 
@@ -169,7 +170,7 @@ patterns from task-specific noise. Selection policy (in priority order):
    skills; failure traces are where the high-value lessons live (matches evolve's "mine success
    AND failure" finding, Decision #18a).
 2. **Diversity over recency.** Don't just take the newest N. Cluster candidate traces (cheap:
-   by tool-sequence signature / task embedding) and sample across clusters so the batch spans
+   by tool-sequence signature / lexical task-summary overlap) and sample across clusters so the batch spans
    distinct task types — prevalence-by-merge only generalizes if the pool is varied.
 3. **Unmined only.** Above the high-water mark; never re-mine.
 4. **Validated traces only for `𝒜⁻`.** Failure traces where the error analyst can't reach a
@@ -265,14 +266,16 @@ idle/tick fires
 Surfacing the proposal: `distill.proposed` is a plugin event (prefixed namespace, Decision #9),
 carried over the event-bus → SSE (`/events`) and rendered by CLI / future TUI. The human decision
 comes back as a normal command (`/distill accept <id>` | `/distill reject <id>`), NOT a new kernel
-primitive — the gate is just a held proposal keyed by id. In `assist` mode a daemon with no
-attached human simply leaves proposals pending (visible in `/distill list`); they are not lost.
+primitive — the gate is just a held proposal keyed by id. Pending proposals are persisted in
+the existing `trace.db` proposal/meta tables so a daemon restart neither loses nor duplicates
+them. In `assist` mode a daemon with no attached human simply leaves proposals pending
+(visible in `/distill list`); they are not lost.
 e2e #9 walks exactly this: proposal appears → confirm → new `SKILL.md` lands in the top root.
 
 Payload carries **references + metadata only** (Decision #7): `source_trace_ids`, not full trace
-bodies; the reviewing UI fetches detail on demand. The proposal SHOULD include provenance
-(`origin: distill`, source trace ids) so evolve/version tooling later knows where the skill came
-from (Decision #20a origin metadata).
+bodies; the reviewing UI fetches detail on demand. Version/provenance data (`origin`,
+source trace ids, parent, pass-rate, lesson-bank refs) are recorded in `.versions/manifest.json`
+by the skill writer, not as new top-level SKILL.md frontmatter.
 
 ---
 
@@ -297,11 +300,14 @@ bundled wayne-* skills identically.
 name: <kebab-case-name>          # SSoT identity; must be unique in the top root
 description: <when-to-use>        # L0 index entry — always in prompt; must be discriminative
 allowed-tools: [...]             # optional; Claude-Code-compatible
-origin: distill                  # provenance (Decision #20a) — not a CC field, Alfred extension
-source_traces: [<ids>]           # provenance for evolve/audit
-version: 1                       # bumped on deepen; .versions/ holds history
+metadata:
+  origin: distill                # Alfred extension lives under metadata
 ---
 ```
+
+`source_traces`, version lineage, pass-rate, and lesson-bank references are stored in the
+skill `.versions/manifest.json` entry written with the accepted proposal. They are not
+top-level frontmatter keys, preserving Claude-Code/agentskills.io compatibility.
 
 Body structure follows the paper's skill anatomy and Alfred's L0/L1/L2 disclosure:
 - **When to apply** (maps to the L0 `description` discriminator).
@@ -374,7 +380,7 @@ namespace; distill owns its event schemas; no shared mutable state with any peer
 
 ## Open questions
 
-1. **Diversity selection cost.** Clustering traces by tool-signature/embedding to sample a diverse
+1. **Diversity selection cost.** Clustering traces by tool-signature/lexical task summaries to sample a diverse
    batch adds a step the papers gloss (they use a curated evolving set). MVP could start with
    "all unmined success+failure above threshold" and add clustering only if skills come out
    overfit. Needs an A/B via the eval harness (module #17): diverse-sample vs recency-take.

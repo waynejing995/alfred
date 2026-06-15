@@ -3,7 +3,7 @@
 Date: 2026-06-15
 Module: `agentkit/stores/trace/` (Ring-2, interface + default impl)
 Spec refs: §4 (Stores table), §4.2 (trace store), §5.3 (distill/dream/evolve), §5.2 (handoff),
-Decisions #17, #17a, #18, #18a, #20a, #20b, #23; e2e #9, #10, #16; `E2E: none` (trace is internal).
+Decisions #17, #17a, #18, #18a, #20a, #20b, #23; store-scope S1-S5 (`project_id` column); e2e #9, #10, #16; `E2E: none` (trace is internal).
 Sibling: `store-session.md` ("Boundary with trace store" — the SSoT split is co-owned there).
 
 > **Why this is the highest-leverage module.** Per Decision #17 the learning signal is the
@@ -37,6 +37,8 @@ In scope:
   skill (evolve candidate filter, Decision #20b).
 - Persist a **pointer back to the session** (`session_id` + message-id range), never the
   message body (Decision #7, #17, §4.2 boundary table).
+- Partition trajectories by `project_id` in one global `~/.alfred/trace.db`; default
+  trace queries and replay sets filter current project with `WHERE project_id=?`.
 - Accept writes from **subagents and handoff workers** (Decision #17, #23) — a worker's
   trajectory and the handoff transfer record both land here, feeding evolve.
 
@@ -67,6 +69,7 @@ session; for a subagent/worker it is the whole worker run.
 | Field | Type | Why it's load-bearing |
 |---|---|---|
 | `trace_id` | str (ulid) | trajectory identity |
+| `project_id` | str | normalized project root path; default replay/mining scope |
 | `session_id` | str | **pointer** to session store (no body copy, Decision #7) |
 | `parent_trace_id` | str? | subagent/handoff worker → its spawner's trajectory (Decision #17, #23) |
 | `agent_role` | str | `'main'` \| `'subagent'` \| `'worker'` — so evolve can scope replay sets |
@@ -303,6 +306,7 @@ store thus stays small and learning-focused; the session store stays the message
 ```sql
 CREATE TABLE traces (
     trace_id        TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL,               -- normalized project root path (store-scope S3)
     session_id      TEXT NOT NULL,            -- pointer to sessions.db (no copy)
     parent_trace_id TEXT,                     -- subagent/handoff worker chain
     agent_role      TEXT NOT NULL,            -- main|subagent|worker
@@ -318,6 +322,7 @@ CREATE TABLE traces (
     handoff_payload TEXT                       -- JSON, when this is a handoff record
 );
 CREATE INDEX idx_traces_outcome ON traces(outcome, outcome_source);
+CREATE INDEX idx_traces_project ON traces(project_id, started_at DESC);
 
 CREATE TABLE trace_skills (                   -- skill linkage → evolve candidate filter
     trace_id   TEXT NOT NULL REFERENCES traces(trace_id),
@@ -343,8 +348,10 @@ CREATE TABLE annotations (                     -- the learning signal, append-on
 CREATE INDEX idx_annotations_trace ON annotations(trace_id, kind);
 ```
 
-The `replay_set(skill_name)` query = join `trace_skills` → `traces` (outcome != unknown) →
-`annotations`, returning trajectory heads; evolve then streams each `body_path` JSONL.
+The default `replay_set(skill_name, project_id=...)` query = join `trace_skills` →
+`traces` (where `traces.project_id=?` and outcome != unknown) → `annotations`, returning
+trajectory heads; evolve then streams each `body_path` JSONL. Cross-project mining is an
+explicit widened query, not the default.
 
 ---
 

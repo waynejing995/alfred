@@ -15,7 +15,7 @@ nothing else:
 
 1. **dedup** — collapse near-duplicate facts.
 2. **merge** — combine related/overlapping facts into one cleaner fact.
-3. **re-index** — rebuild the derived retrieval index (FTS5 + embeddings + entity table)
+3. **re-index** — rebuild the derived retrieval index (FTS5 + entity/recency/access metadata)
    after writes; refresh frontmatter `entities`.
 4. **forgetting/decay** — age out stale facts (archive, not hard-delete in MVP).
 
@@ -52,50 +52,48 @@ One-line boundary: **distill makes skills from traces; dream makes memory cleane
 All four are deliberately the *dumb-but-correct* shape. The expensive, contested part of
 the field is the per-query retrieval *ranker* (store-memory.md owns that, and CEO warned
 off building it pre-trace). dream's job is housekeeping, which is well-served by simple,
-threshold-driven, batch operations. No learned models, no sleep-cycle metaphor machinery.
+threshold-driven, batch operations over the low-dependency memory index. No embedding
+dependency, no graph service, no learned models, no sleep-cycle metaphor machinery in MVP.
 
 ### Candidate selection (shared by all four — keeps the pass cheap)
 
 A full O(N²) pairwise scan of every fact every pass does not scale and is wasted work.
 Bound the batch: dream only considers the **dirty set** — facts created/updated since the
 last dream pass (tracked by `updated` timestamp + a `last_dream_pass` watermark stored in
-`index/`). For each dirty fact, pull its k nearest neighbors via the *existing* embedding
-index (ANN/`sqlite-vec`) to get candidate pairs. This is the standard semantic-dedup
-shape (cluster/ANN → pairwise-within-neighborhood), not a global cross-product.
+`index/`). For each dirty fact, pull candidate neighbors via the *existing* low-dependency
+index: shared entities, FTS/BM25 similarity over body+summary, lexical summary overlap,
+same source/session neighborhood, and recency/access metadata. This is candidate pruning,
+not a semantic ANN dependency.
 
 ```
 dirty = facts where updated > last_dream_pass
 for f in dirty:
-    neighbors = index.knn(f.embedding, k=8)   # reuse store's vec index
+    neighbors = index.related(f, k=8)  # FTS/entity/summary/recency signals, no embeddings
     for g in neighbors:
-        consider_pair(f, g)                    # → dedup or merge below
+        consider_pair(f, g)            # → dedup or merge below
 ```
 
 ### 1. dedup (near-duplicate fact detection)
 
 Two-tier, cheapest-first:
 
-- **Tier A — embedding cosine.** For each candidate pair, `cos(emb(f), emb(g))`.
-  - `cos ≥ 0.95` → **near-identical** → auto-dedup (keep the one with newer `updated` /
-    more sources; drop or fold the other). No LLM needed; this is the SemDeDup shape and
-    the published mem0 consolidation threshold band (≈0.9 merge / ≈0.85 similarity-trigger).
-  - `0.85 ≤ cos < 0.95` → **probable duplicate** → escalate to Tier B.
-  - `cos < 0.85` → not a duplicate; if topically related, it may still be a *merge*
-    candidate (see #2), but not a dedup.
-- **Tier B — LLM judge** (only for the gray band, keeps token cost down). One batched
-  prompt: "Are these two facts saying the same thing? If yes, return the single best
-  merged statement; if no, NOOP." This mirrors mem0's ADD/UPDATE/DELETE/**NOOP** decision
-  but applied *post-hoc in batch* over the existing store, not at write time.
+- **Tier A — deterministic lexical/entity checks.** Candidate pairs with the same primary
+  entities and near-identical normalized summaries/bodies (token overlap, MinHash-style
+  shingles, or exact normalized sentence match) are auto-deduped: keep the one with newer
+  `updated` / more sources; fold the other into provenance. No LLM needed.
+- **Tier B — LLM judge** for ambiguous candidates only. One batched prompt: "Are these
+  two facts saying the same thing? If yes, return the single best merged statement; if no,
+  NOOP." This mirrors mem0's ADD/UPDATE/DELETE/**NOOP** decision but applied *post-hoc in
+  batch* over the existing store, not at write time.
 
-Thresholds are **config, not hard-coded** (different embedding models have different
-geometry). Defaults: `dedup_auto=0.95`, `dedup_review=0.85`.
+Thresholds are **config, not hard-coded** because lexical overlap differs by corpus.
+Semantic cosine thresholds are a future adapter concern, not the default dream path.
 
 ### 2. merge (combining related facts)
 
 Merge ≠ dedup. Dedup removes redundancy (same fact twice); merge *composes* (several
-partial facts → one richer fact). Trigger: a cluster of facts sharing entities and
-moderate similarity (`0.80 ≤ cos < 0.95`) OR a chain of `append`-style facts about the
-same target.
+partial facts → one richer fact). Trigger: a cluster of facts sharing entities with
+moderate BM25/summary overlap OR a chain of `append`-style facts about the same target.
 
 - Group the dirty set's neighbors into small clusters (connected components over the
   "merge-candidate" edges, or just the per-fact neighbor bucket — MVP: per-bucket, no
@@ -113,14 +111,15 @@ This is exactly Stanford generative-agents *reflection* / Letta sleep-time
 
 ### 3. re-index (rebuild the derived retrieval index)
 
-The index (`index/facts.db`: FTS5 + sqlite-vec + entity table) is a **pure derived view**
+The index (`index/facts.db`: FTS5 + entity/recency/access metadata) is a **pure derived view**
 of `facts/*.md` — reconstructible by re-scanning files (store-memory.md SSoT rule). dream
 is the natural place to keep it honest because dream is the batch writer.
 
 - **Incremental (default, every pass):** for every fact dream added/merged/archived this
-  pass, upsert/delete its FTS row, recompute + upsert its embedding, refresh its
-  `entities` (one cheap LLM/NER pass on changed bodies only — this is where dream owns
-  entity extraction, keeping the per-turn write path dumb; store-memory.md open-Q #3).
+  pass, upsert/delete its FTS row, refresh entity rows and access/recency metadata, and
+  refresh `entities` when needed (one cheap LLM/NER pass on changed bodies only — this
+  is where dream owns entity extraction, keeping the per-turn write path dumb;
+  store-memory.md open-Q #3).
 - **Full rebuild (rare / repair):** drop and rescan all files. Triggered on a detected
   index/file divergence (fact count mismatch) or an explicit `dream --reindex`. Because
   the index is derived, a full rebuild is always safe — that's the SSoT payoff.
@@ -151,8 +150,9 @@ retention = w_r * recency        # exp decay on age since last_retrieved
   fact, the store bumps its `access_count` + `last_retrieved`. Useful facts naturally
   survive; never-retrieved facts decay. (Store must record the hit — small change, flagged
   to store-memory as the reciprocal of open-Q #5.)
-- **relevance** = cosine to the stable `core/` (persona+user) + goal text — a fact about a
-  long-abandoned topic scores low.
+- **relevance** = BM25/summary/entity overlap against the stable `core/` (persona+user)
+  + goal text — a fact about a long-abandoned topic scores low. Semantic cosine is a
+  future adapter signal, not required by MVP.
 - **contradiction** = if a newer fact supersedes this one (detected during dedup/merge),
   push the old one toward archive (active supersession, the strongest forgetting signal).
 
@@ -207,7 +207,7 @@ on idle | session_end:
   try:
     dirty = facts updated since last_dream_pass      # bound the work
     if not dirty: return                             # nothing to do (common — cheap)
-    pairs = [(f, g) for f in dirty for g in index.knn(f, k)]   # candidates only
+    pairs = [(f, g) for f in dirty for g in index.related(f, k)]   # candidates only
     # 1. dedup: auto (cos≥.95) + LLM-judge gray band
     # 2. merge: cluster related → 1 LLM call per cluster → new fact, archive inputs
     # 3. decay: retention score → archive dead facts
@@ -289,8 +289,10 @@ the sleep-cycle metaphor. The MVP is the smallest thing that passes e2e #16.
 
 **Build (MVP):**
 - Subscribe `idle` + `session_end`; async, coalesced, autonomy-gated.
-- Dirty-set candidate selection via the store's existing kNN index (no new infra).
-- dedup: cosine auto-band (≥0.95) + one batched LLM-judge call for the gray band.
+- Dirty-set candidate selection via the store's existing FTS/entity/summary/recency index
+  (no new infra, no embeddings).
+- dedup: deterministic lexical/entity auto-band + one batched LLM-judge call for the
+  ambiguous band.
 - merge: per-neighbor-bucket cluster → one LLM call → new fact, archive inputs.
 - decay: arithmetic retention score → archive (move to `.archive/`) clearly-dead facts;
   conservative default thresholds so it rarely fires.
@@ -304,8 +306,9 @@ the sleep-cycle metaphor. The MVP is the smallest thing that passes e2e #16.
   Alfred's dream is a single background pass, not a co-resident shadow agent sharing live
   memory blocks. (The frozen-prefix discipline means there's no live block to co-edit
   anyway.)
-- Learned reranker / fitness-weighted retention model — no traces to tune on yet; pure
-  threshold + arithmetic suffices (CEO warning, mirrors store-memory.md's ranker stance).
+- Embedding/ANN-backed dedup, learned reranker, or fitness-weighted retention model — no
+  traces to tune on yet; pure threshold + arithmetic suffices (CEO warning, mirrors
+  store-memory.md's ranker stance).
 - Global clustering (k-means over the whole corpus). MVP uses per-fact neighbor buckets.
   Promote to global clustering only if buckets miss cross-bucket duplicates at scale.
 - Hard delete / purge. MVP archives only. Purge of `.archive/` is a separate later op.
@@ -334,10 +337,9 @@ precision before vs after dream) is the right sequencing.
 - **Letta — context repositories / defragmentation**: background subagent splits/merges
   memory files into a clean 15–25-file hierarchy — the exact merge/dedup shape, memory-only.
   https://www.letta.com/blog/context-repositories/
-- **mem0 — consolidation + ADD/UPDATE/DELETE/NOOP**: periodic scan; cosine ≈0.85 triggers
-  merge (averaged vectors + LLM conflict resolution), ≈0.9 dedup cluster threshold;
-  consolidation cut storage ~60%, raised retrieval precision ~22%. The threshold bands and
-  the batch NOOP decision dream reuses.
+- **mem0 — consolidation + ADD/UPDATE/DELETE/NOOP**: periodic scan; vector similarity
+  plus LLM conflict resolution in their stack. Alfred reuses the batch NOOP/merge shape,
+  but keeps embeddings out of the MVP default.
   https://mem0.ai/blog/state-of-ai-agent-memory-2026
   https://mem0.ai/blog/memory-eviction-and-forgetting-in-ai-agents
   https://arxiv.org/html/2504.19413v1
@@ -385,12 +387,10 @@ precision before vs after dream) is the right sequencing.
    keep both but make session_end cheap (only that session's dirty facts); revisit if it
    causes churn (merging facts the next session would've added context to). Possibly gate
    session_end behind "≥N new facts this session".
-5. **Embedding reuse vs recompute.** Decay relevance + dedup cosine reuse the store's
-   embeddings. If dream re-extracts entities and rewrites a fact body (merge), it must
-   recompute that fact's embedding before re-index. Confirm the store exposes an
-   embed-one-fact primitive (or dream calls the same embedding source store uses — must be
-   the *same* model or cosine geometry breaks). Ties to store-memory open-Q #1 (embedding
-   source).
+5. **Future semantic adapter consistency.** If a later memory provider adds embeddings,
+   dream must use that provider's own semantic primitive and recompute adapter-owned
+   derived data after merges. The default files provider exposes only FTS/entity/recency
+   primitives.
 6. **Multi-process write contention.** Daemon dream batch-merge + interactive CLI agent
    `memory_append` may collide on `facts/` + index. Reuse session/skill-store discipline:
    SQLite WAL `BEGIN IMMEDIATE` for index, atomic-rename + per-fact lock for files

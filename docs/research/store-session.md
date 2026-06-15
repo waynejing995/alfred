@@ -2,7 +2,7 @@
 
 Date: 2026-06-15
 Module: `agentkit/stores/session/` (Ring-2, interface + default impl)
-Spec refs: §4 (Stores table), §4.2 (trace boundary), Decisions #4b, #7, #15, #17, #29; e2e #3, #17.
+Spec refs: §4 (Stores table), §4.2 (trace boundary), Decisions #4b, #7, #15, #17, #29; store-scope S1-S5 (`project_id` column); e2e #3, #17.
 
 ---
 
@@ -17,6 +17,8 @@ In scope:
   reasoning (separated from visible content).
 - Persist session metadata (model, timestamps, token/cost counters, parent chain).
 - FTS5 full-text index over message content → `session_search` tool.
+- Partition all sessions by `project_id` in one global `~/.alfred/sessions.db`; default
+  reads/searches filter current project with `WHERE project_id=?`.
 - Multi-process safety: `agentkit-server` daemon (cron/dream/SSE) and `agentkit-cli`
   may both touch the same `sessions.db` concurrently.
 
@@ -38,11 +40,12 @@ gateway daemon + CLI sharing one DB file).
 
 ## Recommended design
 
-1. **Single DB file `sessions.db`**, opened by every process that needs it. No central
+1. **Single DB file `~/.alfred/sessions.db`**, opened by every process that needs it. No central
    server-owns-the-DB rule — WAL is explicitly designed for many readers + one writer
    across processes, and SQLite's file locking coordinates the cross-process case. The
    daemon does not get exclusive ownership; CLI opens the same file directly. This keeps
    the in-process SDK path (Decision #3) working without requiring the server to be up.
+   Project isolation is a `project_id` column on `sessions`, not per-project DB files.
 
 2. **Message shape = provider-agnostic Alfred message type**, not a vendor format. The
    row stores the canonical fields needed to *reconstruct* a provider request on resume:
@@ -86,6 +89,7 @@ table drives forward migrations.
 -- ---- sessions: one row per conversation -----------------------------------
 CREATE TABLE IF NOT EXISTS sessions (
     id                  TEXT PRIMARY KEY,          -- uuid/ulid
+    project_id          TEXT NOT NULL,             -- normalized project root path (store-scope S3)
     source              TEXT NOT NULL,             -- 'cli' | 'server' | 'cron' | 'subagent'
     model               TEXT,                      -- resolved model id at session_start
     model_config        TEXT,                      -- JSON: frozen AgentConfig.model subtree
@@ -105,6 +109,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_started   ON sessions(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_project   ON sessions(project_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent    ON sessions(parent_session_id);
 
 -- ---- messages: the conversation record (SSoT) -----------------------------
@@ -191,7 +196,7 @@ class SearchHit(BaseModel):
 # stores/session/base.py  — the Ring-2 interface (swappable)
 class SessionStore(ABC):
     @abstractmethod
-    def create_session(self, *, source: str, model: str,
+    def create_session(self, *, project_id: str, source: str, model: str,
                        model_config: dict, system_prompt: str,
                        parent_session_id: str | None = None) -> str: ...
 
@@ -207,17 +212,18 @@ class SessionStore(ABC):
            for compaction continuations when include_chain."""
 
     @abstractmethod
-    def latest_session(self, *, source: str | None = None) -> str | None:
+    def latest_session(self, *, project_id: str, source: str | None = None) -> str | None:
         """Most-recent session id → powers `--continue`."""
 
     @abstractmethod
-    def list_sessions(self, *, limit: int = 20) -> list[SessionMeta]:
+    def list_sessions(self, *, project_id: str, limit: int = 20) -> list[SessionMeta]:
         """Picker rows → powers `--resume` selection UI."""
 
     @abstractmethod
-    def search(self, query: str, *, limit: int = 5,
+    def search(self, query: str, *, project_id: str, limit: int = 5,
                context_radius: int = 5) -> list[SearchHit]:
-        """FTS5 MATCH ... ORDER BY rank → powers session_search tool."""
+        """FTS5 MATCH ... WHERE project_id=? ORDER BY rank → session_search tool.
+        Cross-project search is an explicit widened query, never the default."""
 
     @abstractmethod
     def end_session(self, session_id: str, *, reason: str) -> None: ...
@@ -322,9 +328,9 @@ read boundary.
    porter only; consider a second `fts5(tokenize='trigram')` table if `session_search` on
    code is poor.
 
-3. **Cross-session search scope & privacy.** `session_search` over *all* sessions vs.
-   filtering by `source`/`user_id`. MVP single-user → search-all. Multi-tenant (server
-   path) would need a `user_id` filter on the FTS join.
+3. **Cross-project search scope & privacy.** `session_search` defaults to the current
+   `project_id`; cross-project search is an explicit option that drops/widens the WHERE.
+   Multi-tenant server paths would additionally need a `user_id` filter on the FTS join.
 
 4. **Recap trigger threshold.** Exact budget fraction at which `--continue` switches from
    verbatim replay to recap-injection. Must coordinate with kernel context-assembly

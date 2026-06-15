@@ -16,7 +16,7 @@ prefix. It then serves L1 (full `SKILL.md` body) and L2 (referenced files) on de
 tools.
 
 In scope:
-- Ordered multi-root scan; precedence = root order (`./skills` > `~/.myagent/skills` > `bundled`).
+- Ordered multi-root scan; precedence = root order (`./skills` > `~/.alfred/skills` > `bundled`).
 - Frontmatter parse + validation; identity = frontmatter `name`.
 - Same-name conflict resolution + fail-loud WARNING naming shadowed skills (e2e #5).
 - L0 index build (frozen at `session_start`); L1/L2 on-demand read tools.
@@ -80,8 +80,7 @@ To stay format-compatible we do **not** add top-level keys. Alfred's own needs r
 
 ```yaml
 metadata:
-  origin: human          # human | distill | evolve  (for #20a write-protection policy)
-  active_version: v3     # which .versions/ entry is live (optional; default = this file)
+  origin: human          # human | distill | evolve | revert  (for #20a write-protection policy)
   tags: "pdf, finance"   # space/comma list consumed by skill_filter (see below)
 ```
 
@@ -90,8 +89,9 @@ metadata:
   unknown provenance is treated as protected).
 - `tags` — drives `skill_filter` include/exclude (Decision #14). Lives in `metadata` because
   the spec has no top-level `tags`; keeping it there preserves Claude Code compatibility.
-- `active_version` — optional pointer used only by the *write/revert* path; the loader's
-  default behaviour ignores it and loads the top-level `SKILL.md` (see Versions invisibility).
+- Version lineage, source traces, pass-rate, lesson-bank refs, and the active pointer live in
+  `.versions/manifest.json`, not in SKILL.md frontmatter. The active file on disk is the
+  loader SSoT.
 
 > Hermes uses extra top-level keys (`platforms`, `required_environment_variables`,
 > `setup.collect_secrets`, `metadata.hermes.config`). We deliberately do NOT copy
@@ -281,9 +281,13 @@ Ties to evolve's safety = versioning + revert (Decision #20a) and the hard const
 ├── SKILL.md            # the ACTIVE version — the only thing the loader sees
 ├── references/ ...
 └── .versions/          # dot-prefixed -> globbed out of the scan
-    ├── v1/SKILL.md     # cold backup; one dir per archived version
-    ├── v2/SKILL.md
-    └── manifest.json   # {active: "v3", history: [{ver, ts, origin, parent}], ...}
+    ├── v1/             # cold whole-dir backup; one dir per archived version
+    │   ├── SKILL.md
+    │   ├── references/
+    │   ├── scripts/
+    │   └── assets/
+    ├── v2/
+    └── manifest.json   # {active: "v3", history: [{ver, ts, origin, parent, ...}], ...}
 ```
 
 - **Invisibility mechanism = single rule**: `iter_skill_dirs` skips any dir whose name
@@ -292,16 +296,17 @@ Ties to evolve's safety = versioning + revert (Decision #20a) and the hard const
   - they never participate in same-name conflict detection (#20a-i's exact requirement —
     a naive `versions/` would make v1/v2/v3 all scan as same-name skills and trip the
     shadow WARNING). One dot-prefix kills both.
-- **SSoT: a skill's identity = its active version.** The active version is the top-level
-  `SKILL.md`. `.versions/` is *revert-only cold backup* — not a loadable entity. (We do
-  NOT make the loader resolve `metadata.active_version` and read from `.versions/`; that
-  would put two skills' worth of read logic in the hot path and re-introduce ambiguity.
-  Active = the file at `<skill>/SKILL.md`, full stop.)
-- **Revert (e2e #10) = a write-path op, not a loader op**: `revert` copies
-  `.versions/v2/SKILL.md` back over `<skill>/SKILL.md` (atomic replace, M4) and updates
-  `manifest.json.active`. Next `session_start`, the loader picks up the restored active
-  file with zero version-awareness. "Old version still loadable after revert" (e2e #10
-  observable) is satisfied because revert makes the old version *the active file*.
+- **SSoT: a skill's identity = its active directory.** The active version is the top-level
+  skill directory (`SKILL.md` plus `references/` / `scripts/` / `assets/`). `.versions/`
+  is *revert-only cold backup* — not a loadable entity. (We do NOT make the loader resolve
+  frontmatter and read from `.versions/`; that would put two skills' worth of read logic in
+  the hot path and re-introduce ambiguity. Active = the top-level skill dir, full stop.)
+- **Revert (e2e #10) = a write-path op, not a loader op**: `revert` copies the whole
+  `.versions/v2/` directory back over the active skill dir (atomic directory-safe swap via
+  the writer) and updates `manifest.json.active`. Next `session_start`, the loader picks up
+  the restored active directory with zero version-awareness. "Old version still loadable
+  after revert" (e2e #10 observable) is satisfied because revert makes the old version
+  *the active directory*.
 - **Why dot-prefix over a sibling `skill_archive/` root**: keeping the archive *inside* the
   skill dir keeps a skill self-contained (copy/move/delete the dir = move its whole
   history), and avoids a second scan-exclusion rule. `.versions/` is also excluded by the
@@ -398,12 +403,13 @@ def apply_filter(skills: dict[str, LoadedSkill], f: SkillFilter) -> dict[str, Lo
    (`platforms: [linux, macos]`). MVP `extra="ignore"` loads such skills regardless. If
    wayne-* skills carry OS-specific scripts, a post-MVP `skill_filter.platform` (auto from
    host) would prevent loading unusable skills. Deferred; flag only.
-3. **`allowed-tools` enforcement.** The field is parsed (compat) but the spec calls it
-   experimental and Alfred's tool-permission model is the handoff/subagent isolation surface
-   (#23a). Does a skill's `allowed-tools` scope the *session's* tools while that skill is
-   active, or is it advisory-only in MVP? Recommend **advisory-only in MVP** (parse, ignore
-   for enforcement) — wiring it to live tool-gating couples the loader to the permission
-   system; revisit when subagent tool-scoping lands.
+3. **`allowed-tools` invocation scope.** Resolved after tools-permission T10 and the plan
+   alignment audit: Alfred enforces this field, but only during an explicit skill
+   invocation context. `skill_view(name)` loads text and emits `skill_used`; it does not
+   permanently narrow the whole session. A skill-run/worker pushes `skill_name` into
+   `ToolCallContext`, the permission resolver adds `permission_layer_for_skill`, and the
+   scope is popped when that invocation completes. Multiple active scopes resolve by the
+   strictest permission; viewing L1 alone never broadens or narrows unrelated tool calls.
 4. **name≠dirname strictness.** agentskills.io *requires* name==dirname; some on-disk
    wayne-* skills may not comply. M7 treats mismatch as a catalog error (skip+WARNING). Is
    skip too harsh for the copy-in case, or is "fix the dir name" the right forcing function?

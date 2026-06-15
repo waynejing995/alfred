@@ -19,8 +19,8 @@ In scope:
   (Decision #17a: retrieval-based, NOT dump-everything).
 - Agent-facing `memory_*` tools to write/edit facts mid-session (take effect next
   session — frozen-prefix discipline).
-- A **swappable `MemoryProvider` interface** so mem0 (vector) / Zep (temporal KG) drop
-  in as A/B alternatives with zero kernel change.
+- A **swappable `MemoryProvider` interface** so mem0/Zep/Graphiti can be added later
+  as A/B alternatives with zero kernel change. They are not MVP runtime dependencies.
 
 Explicitly OUT of scope:
 - Conversation messages → `session` store (§4, store-session.md).
@@ -41,20 +41,26 @@ and actually measure whether a smarter ranker helps.
 ## Recommended MVP
 
 The dumbest thing that hits the Letta "filesystem is all you need" baseline:
-**markdown files on disk + a hybrid top-k retriever, no graph, no learned ranker.**
+**markdown files on disk + SQLite FTS/entity/recency retrieval, no graph, no embedding
+dependency, no learned ranker.**
 
 ### File layout
 
 ```
-<memory_root>/                      # e.g. ~/.myagent/memory/  (configurable)
-  core/                             # ALWAYS injected verbatim (not retrieved)
+<memory_root>/                      # e.g. ~/.alfred/memory/  (configurable via ALFRED_HOME)
+  core/                             # GLOBAL; ALWAYS injected verbatim (not retrieved)
     persona.md                      #   agent self-description
     user.md                         #   stable facts about the user (Letta "human" block)
   facts/                            # RETRIEVED top-k (the searchable corpus)
     <slug>.md                       #   one fact-cluster per file, frontmatter-described
   index/
-    facts.db                        #   SQLite: FTS5 (BM25) + embeddings (sqlite-vec) + entity table
+    facts.db                        #   SQLite: FTS5 (BM25) + entity/recency/access metadata
 ```
+
+`core/` is global and has no `project_id`. `facts/*.md` stay human-readable, but the
+derived `index/facts.db` rows carry `project_id`; default retrieval always filters
+`WHERE project_id=?` (current project only). Cross-project retrieval is a later widening
+of that WHERE clause, not a second index.
 
 Each `facts/<slug>.md` is a small, human-editable unit with SKILL.md-style frontmatter
 (matches Decision #24's Claude-Code-compatible format, so it reads/exports trivially):
@@ -87,21 +93,21 @@ Why this layout (each choice is the dumb-but-correct one):
 
 ### Retrieval (DUMB on purpose)
 
-Mirror mem0's published retrieval stack — **three parallel scoring passes fused** —
-because it is (a) the 2026 consensus shape, (b) implementable without ML, (c) exactly
-the "semantic+BM25+entity fusion" the spec already names:
+The MVP retriever uses only low-dependency signals available from files + SQLite:
 
 1. **BM25** over file body + `summary` (SQLite FTS5 — already in the stack for session).
-2. **Semantic** cosine over a local embedding of `summary` (sqlite-vec; one small
-   embedding model, or the provider's embeddings endpoint).
-3. **Entity** overlap: count query-entities ∩ file `entities` frontmatter.
+2. **Lexical summary overlap**: token/Jaccard overlap between the seed query and the
+   frontmatter `summary`; cheap stand-in for a semantic pass without an embedding model.
+3. **Entity overlap**: count query-entities ∩ file `entities` frontmatter.
+4. **Recency/access**: optional rank from `updated`, `last_retrieved`, and `access_count`
+   metadata so recently useful facts can surface without a learned model.
 
 Fuse by **Reciprocal Rank Fusion (RRF)** — `score = Σ 1/(k + rank_i)` — NOT a tuned
-weighted sum. RRF needs zero tuning, is rank-based (immune to score-scale mismatch
-across the three signals), and is the documented default for exactly this many-signal
-case. **This is the whole ranker.** Do not build a learned reranker for MVP — there are
-no traces yet to tune it on (CEO warning). A second-pass reranker is a documented
-upgrade slot (mem0 best-practice) we leave open, not built.
+weighted sum. RRF needs zero tuning and is rank-based, so the BM25, lexical, entity,
+and recency passes do not need comparable score scales. **This is the whole MVP
+ranker.** Do not build embeddings, sqlite-vec, graph traversal, or a learned reranker
+for the default store. Those belong in future `MemoryProvider` adapters/A-B arms once
+Alfred has real traces to measure lift.
 
 Top-k: start `k=10` facts (~a few KB), config-capped by token budget. Tunable later
 once real session traces show what k recall needs.
@@ -119,8 +125,9 @@ novel ranking risk.
 
 ## MemoryProvider interface
 
-The swap surface. Kernel/loop never see files or vectors — only this ABC. mem0 and Zep
-become alternate impls behind it (registered like any `{type, params}` component,
+The swap surface. Kernel/loop never see files, indexes, vectors, or graphs — only this
+ABC. mem0/Zep/Graphiti become alternate impls behind it (registered like any `{type,
+params}` component,
 Decision #13). Lifecycle is **three calls**, matching the agent loop's real shape:
 
 ```python
@@ -204,13 +211,13 @@ critical correctness boundary.
 
 1. **`prefetch()` runs once, at session_start, before prompt assembly.** Its
    `RetrievedMemory.blocks` are concatenated into the **static system prefix** —
-   alongside persona and skill L0 index — and the cache breakpoint
+   alongside persona, project instructions, and skill L0 index — and the cache breakpoint
    (`cache_control: ephemeral` for Anthropic; prefix-stability for OpenAI) is placed
    *after* them. From that point the retrieved memory is **frozen for the session**.
 
 2. **`core/` blocks** (persona + user) are injected verbatim, always, ahead of the
    retrieved `facts/` blocks. Order within the prefix is fixed
-   (`persona → user → retrieved facts → skill L0`) so the prefix is byte-stable across
+   (`persona → user → project_instructions → retrieved facts → skill L0`) so the prefix is byte-stable across
    turns → cache hits.
 
 3. **Mid-session writes do NOT mutate the prefix.** `memory_*` tools and `sync_turn()`
@@ -319,12 +326,11 @@ answers exist, the boundary is broken.
 - **Letta — sleep-time agents**: background process updates memory blocks during idle;
   "learned context." Maps onto Alfred's dream subsystem.
   https://docs.letta.com/guides/agents/architectures/sleeptime/
-- **mem0 — architecture + 2026 benchmarks**: single-pass ADD-only extraction;
-  three-pass parallel retrieval fused (semantic + BM25 + entity) — the exact fusion the
-  spec names; LoCoMo 92.5 / LongMemEval 94.4 at ~6,956 tokens/query (vs ~26k full-
-  context, ~73% reduction); +29.6 temporal / +23.1 multi-hop over prior algo. The A/B
-  vector alternative. Best-practices: async writes, optional second-pass reranker,
-  metadata filtering.
+- **mem0 — architecture + 2026 benchmarks**: single-pass ADD-only extraction and
+  multi-signal retrieval. Its vector/semantic pass is the A/B vector alternative, not
+  the MVP default. Alfred borrows the multi-signal + RRF shape while keeping the default
+  implementation dependency-light (BM25 + lexical/entity/recency). Best-practices:
+  async writes, optional second-pass reranker, metadata filtering.
   https://mem0.ai/blog/state-of-ai-agent-memory-2026
   https://mem0.ai/research
   https://arxiv.org/html/2504.19413v1
@@ -351,10 +357,10 @@ mem0 vs Zep *on our own traces*, which is precisely why the swap interface exist
 
 ## Open questions
 
-1. **Embedding source for the semantic pass.** Local model (offline, no API cost,
-   another dependency) vs the configured provider's embeddings endpoint (one less dep,
-   per-query cost, needs a provider that exposes embeddings). MVP leans local-small to
-   keep `prefetch` cheap and offline; revisit once provider-layer embeddings land.
+1. **Future semantic adapter.** When real traces justify it, add an optional
+   embedding-backed adapter or ranking pass (local model vs provider embeddings) behind
+   `MemoryProvider`. It must not enter the default files implementation until eval shows
+   a measurable lift over BM25+lexical+entity+recency.
 2. **Seed-query quality at session_start.** With no user turn yet, the seed is
    persona+user+goal+resumed-tail. Is that enough recall, or do we need a cheap "what's
    relevant now?" pre-pass? Defer — measure recall on real traces first (CEO: don't
@@ -365,8 +371,8 @@ mem0 vs Zep *on our own traces*, which is precisely why the swap interface exist
    it (keeps the write path dumb).
 4. **`prefetch` latency on the cache path.** It's synchronous before prompt assembly. If
    the index grows large, does retrieval add user-visible startup latency? Bound k and
-   index size; if it bites, precompute embeddings at write time (already the plan) so
-   `prefetch` is pure lookup.
+   index size; keep FTS/entity/recency lookup pure SQLite in the default path. Semantic
+   adapters must precompute their own expensive derived data at write/batch time.
 5. **Decay policy for dream.** What makes a fact "stale" — age, last-retrieved, contradiction
    by a newer fact? Out of scope for *this* module (it's dream's policy, Decision #18),
    but the store must expose `last_retrieved` / `updated` metadata so dream can decide.

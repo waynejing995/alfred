@@ -9,8 +9,9 @@ Date: 2026-06-15. All field names verified against official Anthropic + LiteLLM 
 
 The Ring-1 context-assembly component owns three jobs, all of them deploy-coupled to cache economics:
 
-1. **Frozen-prefix assembly** — build the static system prompt once at `session_start` (persona + retrieved
-   memory + skill L0 index + tool definitions), place one cache breakpoint at its end, never mutate it
+1. **Frozen-prefix assembly** — build the static system prompt once at `session_start`
+   (`persona → user → project_instructions → memory(facts) → skill_l0`), place one
+   cache breakpoint at its end, never mutate it
    mid-session.
 2. **Per-turn message assembly** — append the rolling conversation tail after the frozen prefix; maintain a
    small rolling set of cache breakpoints on recent turns.
@@ -32,18 +33,22 @@ not a tunable.
 ### 1. Prompt assembly order and the cache breakpoint
 
 Cache validity follows the hierarchy **`tools` → `system` → `messages`**; a change at any level invalidates that
-level *and everything after it* (Anthropic docs). So the rule is **most-stable-first**, and the single static
-breakpoint goes at the end of the last stable block.
+level *and everything after it* (Anthropic docs). Provider tool schemas are passed through
+the provider's tool field and must also be stable, but the **textual frozen system prefix**
+uses the layered-instructions order L6. The rule is **most-stable-first**, and the single
+static breakpoint goes at the end of the last stable text block.
 
 Recommended frozen-prefix order (all assembled once, then frozen):
 
 | # | Block | Stability | Why this position |
 |---|-------|-----------|-------------------|
-| 1 | **tools** (local + mcp tool schemas) | highest — set at config load | tool change invalidates *everything*; keep it first and frozen so it never moves |
-| 2 | **persona / soul** (identity, operating rules) | high — static per config | rarely changes within a process lifetime |
-| 3 | **skill L0 index** (name+description for every loaded skill) | frozen at session_start | snapshot per Decision #12; a few KB even for dozens of skills |
-| 4 | **retrieved memory** (top-k from store:memory, NOT a full dump) | frozen at session_start | retrieval result is per-session but fixed once chosen (Decision #17a) |
-| 5 | **goal injection** (if set, Decision #19) | frozen at session_start | injected once at session_start |
+| provider | **tools** (local + mcp tool schemas) | highest — set at session_start | tool change invalidates *everything* in provider cache terms; keep schemas stable and sorted, but not as text in the system prefix |
+| 1 | **persona / soul** (identity, operating rules) | high — global memory core | rarely changes within a process lifetime |
+| 2 | **user profile** (global `core/user.md`) | high — global memory core | stable user facts before project-specific rules |
+| 3 | **project instructions** (`AGENTS.md` merged) | per-tree, frozen at session_start | project rules apply before retrieved facts and skills |
+| 4 | **retrieved memory facts** (top-k from store:memory, NOT a full dump) | frozen at session_start | retrieval result is per-session but fixed once chosen (Decision #17a) |
+| 5 | **skill L0 index** (name+description for every loaded skill) | frozen at session_start | snapshot per Decision #12; a few KB even for dozens of skills |
+| optional | **goal injection** (if set, Decision #19) | frozen at session_start | session-control block; must be deterministic and cache-stable |
 | **⎯** | **← CACHE BREAKPOINT (`cache_control: ephemeral`)** | | end of static prefix |
 | 6 | conversation tail (user/assistant/tool messages) | volatile | grows every turn; never part of the frozen prefix |
 
@@ -86,11 +91,13 @@ what "next session" means in a daemon — is **§ Gap answers (H3)**.
 
 class FrozenPrefix(BaseModel):
     """Assembled once at session_start, then immutable for the session's life."""
-    tools: list[ToolSchema]          # block 1 — highest stability
-    persona: str                     # block 2
-    skill_l0: list[SkillCard]        # block 3 — name+description, snapshot
-    memory: list[MemoryChunk]        # block 4 — retrieved top-k, NOT a dump
-    goal: str | None                 # block 5
+    tools: list[ToolSchema]          # provider tool field; sorted/stable, not textual prefix
+    persona: str                     # text block 1
+    user: str                        # text block 2
+    project_instructions: str        # text block 3
+    memory: list[MemoryChunk]        # text block 4 — retrieved top-k, NOT a dump
+    skill_l0: list[SkillCard]        # text block 5 — name+description, snapshot
+    goal: str | None                 # optional deterministic session-control block
     fingerprint: str                 # sha256 of the serialized prefix — drift detector
 
     model_config = ConfigDict(frozen=True)   # mutation raises -> Fail-Loud

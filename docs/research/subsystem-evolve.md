@@ -284,9 +284,9 @@ async def _commit_locked(self, skill_name, new_md, origin, parent_ver) -> str:
     vers_dir = sk_dir / ".versions"
     manifest = read_manifest(vers_dir / "manifest.json")   # safe: under the lock
 
-    # 1. archive the CURRENT active version into .versions/<cur>/ (cold backup)
+    # 1. archive the CURRENT active directory into .versions/<cur>/ (cold backup)
     cur_ver = manifest.active
-    archive_current(sk_dir / "SKILL.md", vers_dir / cur_ver / "SKILL.md")
+    archive_current_dir(sk_dir, vers_dir / cur_ver)
 
     # 2. compute next version id (monotonic; no race — we hold the lock)
     new_ver = next_version(manifest)        # e.g. "v4"
@@ -296,9 +296,10 @@ async def _commit_locked(self, skill_name, new_md, origin, parent_ver) -> str:
     tmp.write_text(new_md, encoding="utf-8")
     os.replace(tmp, sk_dir / "SKILL.md")    # ← atomic rename; loader never sees a torn file
 
-    # 4. record the new version body in archive + update manifest LAST (commit point)
+    # 4. record the new whole-dir snapshot in archive + update manifest LAST (commit point)
     (vers_dir / new_ver).mkdir(parents=True, exist_ok=True)
     (vers_dir / new_ver / "SKILL.md").write_text(new_md, encoding="utf-8")
+    copy_l2_dirs(sk_dir, vers_dir / new_ver, dirs=("references", "scripts", "assets", "templates"))
     manifest.active = new_ver
     manifest.history.append(VersionRec(ver=new_ver, ts=now(), origin=origin,
                                        parent=parent_ver))
@@ -317,9 +318,10 @@ async def _commit_locked(self, skill_name, new_md, origin, parent_ver) -> str:
   startup consistency check can detect `manifest.active`'s archived body ≠ live `SKILL.md`
   and emit a WARNING (fail-loud on drift). The manifest is *also* written atomically
   (temp+replace) so it's never itself torn.
-- **Revert reuses the exact same path** under the same lock: `commit_version(skill, body=
-  read(.versions/<target>/SKILL.md), origin="revert", parent=<current>)`. Revert is just a
-  commit whose body comes from an archived version — so it can never race evolve/distill;
+- **Revert reuses the exact same path** under the same lock: copy the whole
+  `.versions/<target>/` snapshot back to the active skill directory and commit it as a new
+  forward version with `origin="revert"` and `parent=<current>`. Revert is just a commit
+  whose body/resources come from an archived version — so it can never race evolve/distill;
   they all queue on the one lock. (This satisfies e2e #10: "revert restores old version; old
   version still loadable.")
 
@@ -396,12 +398,16 @@ store-skill-loader.md; evolve is the writer.
 
 ```
 <skill-name>/
-├── SKILL.md              # ACTIVE version — the ONLY thing the loader reads (SSoT identity)
-├── (L2 files…)
+├── SKILL.md              # ACTIVE version — the loader reads this active directory
+├── references/ scripts/ assets/ templates/   # active L2 resources
 └── .versions/            # dot-prefixed → globbed OUT of the loader scan (invisible)
-    ├── v1/SKILL.md       # cold backups, one dir per archived version
-    ├── v2/SKILL.md
-    ├── v3/SKILL.md
+    ├── v1/               # cold whole-dir snapshots, one dir per archived version
+    │   ├── SKILL.md
+    │   ├── references/
+    │   ├── scripts/
+    │   └── assets/
+    ├── v2/
+    ├── v3/
     ├── lesson_bank.json  # evolve's per-skill working memory (persisted across runs)
     └── manifest.json     # {active: "v4", history: [{ver, ts, origin, parent}, …]}
 ```
@@ -421,11 +427,11 @@ store-skill-loader.md; evolve is the writer.
 
 ### Revert mechanics
 
-- `revert(skill, to_ver)` = `commit_version(skill, body=read(.versions/<to_ver>/SKILL.md),
-  origin="revert", parent=<current>)` — a normal commit under the M4 lock, so it's atomic
-  and race-free against evolve/distill. It creates a *new* version whose body equals an old
-  one (forward-only history; we never delete archive entries — keep-ancestors is free and
-  matches DGM).
+- `revert(skill, to_ver)` = copy the whole `.versions/<to_ver>/` snapshot back to the
+  active skill directory and record a normal forward commit under the M4 lock with
+  `origin="revert", parent=<current>`. It creates a *new* version whose active directory
+  equals an old one (forward-only history; we never delete archive entries —
+  keep-ancestors is free and matches DGM).
 - e2e #10 pass criterion: after merge, version +1; `revert` restores the old version and the
   old version still loads. Both are direct consequences of the layout above.
 

@@ -37,10 +37,10 @@ Out of scope: cross-process delivery (that is the SSE wire format, downstream), 
    three buckets: exact, prefix-glob, universal. O(1) exact + O(#glob-patterns) — fine for
    a kernel with <30 event types.
 
-2. **One `emit`, two dispatch policies, selected by the EVENT, not the call site.** The
+2. **One async `emit`, two dispatch policies, selected by the EVENT, not the call site.** The
    event class declares `blockable: ClassVar[bool]`. `pre_tool` is blockable=True →
    awaited inline, first raise propagates (veto). Background events blockable=False →
-   isolated fan-out (see H2). This keeps the loop call sites uniform: always
+   isolated supervised fan-out that cannot hang the emitter (see H2). This keeps the loop call sites uniform: always
    `await bus.emit(ev)`; the event type decides semantics (SSoT — dispatch policy lives
    with the event definition, not scattered at emit sites).
 
@@ -131,9 +131,11 @@ from .base import Event, serialize
 RESERVED = {"", "kernel", "alfred", "sys"}   # foreign-namespace guard (#9)
 
 class EventBus:
-    def __init__(self) -> None:
+    def __init__(self, *, background_timeout_s: float = 30.0) -> None:
         self._subs: dict[str, list[Callable]] = {}
         self._sinks: list[asyncio.Queue] = []     # stream() outlets (#15/#25)
+        self._tasks: set[asyncio.Task] = set()    # supervised background subscribers
+        self._background_timeout_s = background_timeout_s
 
     # ---- registration -------------------------------------------------
     def on(self, pattern: str, fn: Callable, *, owner_ns: str = "") -> Callable:
@@ -180,15 +182,20 @@ class EventBus:
                 await r
 
     async def _emit_isolated(self, ev: Event, fns: list[Callable]) -> None:
-        # H2: every subscriber isolated; one failure never kills siblings or the loop.
+        # H2: every subscriber isolated; one failure/hang never kills siblings or the loop.
         async def run(fn):
             try:
-                r = fn(ev)
-                if inspect.isawaitable(r):
-                    await r
+                async with asyncio.timeout(self._background_timeout_s):
+                    r = fn(ev)
+                    if inspect.isawaitable(r):
+                        await r
             except Exception as exc:               # noqa: BLE001 -- intentional, see below
                 await self._report_subscriber_error(ev, fn, exc)
-        await asyncio.gather(*(run(f) for f in fns))  # all run to completion
+        for fn in fns:
+            task = asyncio.create_task(run(fn))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+        # Return after enqueueing tasks. Background events must never stall the emitter.
 
     async def _report_subscriber_error(self, ev, fn, exc) -> None:
         # FAIL-LOUD: log ERROR + emit a first-class event. NOT swallowed.
@@ -232,14 +239,14 @@ evolve/goal). Two naive policies both fail:
 
 **Policy (concrete).** For background (`blockable=False`) events ONLY:
 
-1. **Isolate** — wrap each subscriber in its own try/except, fan out with
-   `asyncio.gather(*runs)` where each `run` already catches. Equivalent to
-   `return_exceptions=True` semantics but we handle inside each task so siblings ALWAYS
-   run to completion and the gather itself never raises. (We deliberately do NOT use bare
-   `gather(return_exceptions=True)` and discard the list — that is the swallow trap.)
-   We also do NOT use `asyncio.TaskGroup` here: TaskGroup cancels siblings on first
-   failure (2026 docs) — correct for "all-or-nothing" subtasks, **wrong** for independent
-   Ring-3 loops where one plugin's failure must not cancel the others.
+1. **Isolate** — wrap each subscriber in its own supervised task with try/except and a
+   per-subscriber timeout. `emit()` schedules those tasks and returns after enqueueing; it
+   does not await `gather()` for background events, because one hung plugin must not hang
+   the kernel loop. We deliberately do NOT use bare fire-and-forget: tasks are tracked in
+   `_tasks`, exceptions/timeouts emit `subscriber.error`, and shutdown can drain/cancel the
+   tracked set. We also do NOT use `asyncio.TaskGroup` here: TaskGroup cancels siblings on
+   first failure (2026 docs) — correct for "all-or-nothing" subtasks, **wrong** for
+   independent Ring-3 loops where one plugin's failure must not cancel the others.
 
 2. **Visibility — two channels, both mandatory:**
    - `logger.error(... exception=exc)` with full traceback (operator-visible).
@@ -257,8 +264,8 @@ evolve/goal). Two naive policies both fail:
    would defeat the veto contract (#7). The two policies are intentional mirror images,
    keyed off `Event.blockable`.
 
-**Net contract:** background subscriber failure → sibling subscribers unaffected, kernel
-loop unaffected, ERROR logged, `subscriber.error` emitted. This satisfies both
+**Net contract:** background subscriber failure or timeout → sibling subscribers unaffected,
+kernel loop unaffected, ERROR logged, `subscriber.error` emitted. This satisfies both
 "don't crash the loop" and "don't degrade silently" — the exact H2 ask.
 
 **Negative-path e2e (feeds L9).** New row: a deliberately-raising `turn_end` subscriber →
@@ -290,6 +297,12 @@ async for frame in bus.stream():
   abstraction, both consumers (#3). The server adds only SSE framing; no per-event logic.
 - `stream_delta` (per-token, #15) rides the same channel as a high-frequency event;
   opt-in (server subscribes it, in-process SDK may not) — it does not persist (#15).
+- Replay consumers use the stream as a **render projection**, not the storage SSoT. Events
+  may include bounded render-grade payloads needed for row #12/#29 (`user_message`,
+  `stream_delta.text`, tool name, safe structured args, result preview/status) plus
+  `session_id`/`trace_id` refs. Large bodies stay in session/trace stores; replay hydrates
+  refs when it needs exact full content. This keeps stores authoritative while making the
+  SSE/JSONL stream sufficient to reconstruct a turn.
 - **"add event = 2 places" survives the SSE path**: the endpoint loops over generic
   frames, so a new event needs zero SSE-layer change. ✔ Confirmed against e2e #12
   (replay script reconstructs turn from generic frames → no per-event renderer needed).
@@ -306,8 +319,11 @@ async for frame in bus.stream():
 - `model_config = {"frozen": True, "extra": "forbid"}` — events are immutable value objects
   (no subscriber mutates a shared payload — avoids the cybernetics #4 multi-writer trap),
   and `forbid` makes a typo'd payload field crash at construction (schema-first, CLAUDE.md).
-- Payload = **references + metadata only** (`session_id`, `turn_id`, `tool_name`,
-  `*_ref`), never full message bodies (#7) — session/trace stores own the bodies (SSoT).
+- Payload = **references + metadata plus bounded render payloads** (`session_id`, `turn_id`,
+  `tool_name`, safe args/result preview, `*_ref`). Never make the event stream the full
+  message-body SSoT; session/trace stores own bodies. The bounded render fields exist only
+  so CLI `stream-json` and SSE replay can reconstruct the user-visible turn without
+  per-event custom fetch logic for small payloads.
 - `serialize()` is the single generic function; `model_dump(mode="json")` makes it
   SSE-ready (datetimes/UUIDs/enums → JSON scalars) with no custom serializer.
 
@@ -357,10 +373,10 @@ namespaces) while staying enum-free and validation-at-definition.
    carve-out: kernel may own dotted names; the rule is really "plugins MUST be dotted +
    own-prefix", not "kernel MUST be bare". Tighten the validator wording accordingly.
 
-3. **Subscriber timeouts.** A background subscriber that hangs (never returns) silently
-   stalls `gather`. Should `_emit_isolated` wrap each `run` in `asyncio.timeout(N)` and
-   treat timeout as a `subscriber.error`? Likely yes for daemon robustness (H3 long-lived
-   daemon) — but adds a config knob. Defer to control:autonomy+config module; flag here.
+3. **Subscriber timeout value.** The policy is no longer open: background subscribers are
+   supervised with `asyncio.timeout(N)` and timeout emits `subscriber.error`. The remaining
+   tuning question is only the default `N` and whether long-running subsystems should
+   override it per subscriber.
 
 4. **Ordering across patterns.** `_match` concatenates exact → glob → `*` bucket order;
    within a bucket, registration order. Is a deterministic cross-pattern order needed

@@ -131,7 +131,7 @@ model:
       params: {judge: {type: litellm, params: {model: claude-haiku-4-5}}}
     policy:                                  # M6 — see Gap answers
       per_worker_timeout_s: 30
-      quorum: 1                              # min real responders
+      quorum: 2                              # forced cross-vendor proof: both workers must respond
       judge_failure: fallback_code          # llm_judge fails -> code rule
       code_fallback_rule: concat
 ```
@@ -182,7 +182,8 @@ Research backing: self-consistency = majority vote / empirical mode (emergentmin
 **semantic** voting clusters by rationale similarity rather than exact string and yields gains
 on open-ended tasks (arxiv 2509.23067); ranked voting (Borda/IRV/RRV) improves robustness
 (ACL 2025 findings 744). `majority` and `concat` are the MVP defaults; `semantic_majority`
-needs an embedding model (reuse memory's embedder) — ship as opt-in.
+needs an explicit embedding/semantic provider — ship as opt-in, not tied to the default
+memory store.
 
 **B. LLM-judge (calls a model via the INJECTED judge provider):**
 
