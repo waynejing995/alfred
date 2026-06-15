@@ -175,9 +175,7 @@ class Agent:
         self.session_id = self.session_store.create_session(
             source="cli",
             model=getattr(self.provider, "model", ""),
-            model_config=self.config.model.model_dump(mode="json")
-            if self.config is not None
-            else {"type": "mock"},
+            model_config=_redacted_model_config(self.config),
             system_prompt=_system_prompt_text(self._assembler),
             title=prompt[:80],
         )
@@ -272,6 +270,27 @@ def _coerce_tools(
 
 def _join_blocks(blocks) -> str:
     return "\n\n".join(block.text for block in blocks)
+
+
+def _redacted_model_config(config: AgentConfig | None) -> dict[str, Any]:
+    if config is None:
+        return {"type": "mock"}
+    data = config.model.model_dump(mode="json")
+    return _redact_secrets(data)
+
+
+def _redact_secrets(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            if key in {"http_headers", "api_key", "headers"}:
+                redacted[key] = "<redacted>"
+            else:
+                redacted[key] = _redact_secrets(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_secrets(item) for item in value]
+    return value
 
 
 def _system_prompt_text(assembler: ContextAssembler | None) -> str:

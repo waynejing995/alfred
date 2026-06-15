@@ -7,6 +7,7 @@ import yaml
 from loguru import logger
 
 from agentkit import Agent
+from agentkit.control.config import AgentConfig
 from agentkit.stores.session.sqlite import SQLiteSessionStore
 from agentkit_cli.output import OutputFormat, final_result_frame, render_result, render_stream_frame
 from agentkit_eval import Experiment, run_experiment
@@ -50,6 +51,7 @@ def eval_run(path: str) -> None:
 @click.option("--base-url", envvar="ANTHROPIC_BASE_URL")
 @click.option("--max-tokens", type=int)
 @click.option("--tool-choice", help="Force a provider tool choice, e.g. hashread.")
+@click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False))
 @click.option("--session-db", type=click.Path(dir_okay=False), help="Path to sessions.db.")
 @click.option("--continue", "continue_session", is_flag=True, help="Continue latest CLI session.")
 def chat(
@@ -62,6 +64,7 @@ def chat(
     base_url: str | None,
     max_tokens: int | None,
     tool_choice: str | None,
+    config_path: str | None,
     session_db: str | None,
     continue_session: bool,
 ) -> None:
@@ -73,7 +76,9 @@ def chat(
         else None
     )
     agent = Agent(
-        config=_config(provider, model, env_key, base_url, max_tokens),
+        config=AgentConfig.from_yaml(config_path)
+        if config_path
+        else _config(provider, model, env_key, base_url, max_tokens),
         session_store=session_store,
         resume_session_id=resume_id,
     )

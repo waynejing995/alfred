@@ -68,6 +68,16 @@ def test_cli_json_output_is_valid_json() -> None:
     assert payload["usage"]["total_tokens"] > 0
 
 
+def test_cli_accepts_config_file(tmp_path) -> None:
+    config = tmp_path / "agent.yaml"
+    config.write_text("model:\n  type: mock\n", encoding="utf-8")
+
+    result = CliRunner().invoke(main, ["chat", "hello", "--config", str(config)])
+
+    assert result.exit_code == 0
+    assert result.output == "mock: hello\n"
+
+
 def test_cli_stream_json_output_is_valid_jsonl() -> None:
     result = CliRunner().invoke(main, ["chat", "hello", "--output-format", "stream-json"])
 
