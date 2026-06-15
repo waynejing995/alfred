@@ -9,6 +9,7 @@ from loguru import logger
 from agentkit import Agent
 from agentkit.control.config import AgentConfig
 from agentkit.stores.session.sqlite import SQLiteSessionStore
+from agentkit.stores.trace.sqlite import SQLiteTraceStore
 from agentkit_cli.output import OutputFormat, final_result_frame, render_result, render_stream_frame
 from agentkit_eval import Experiment, run_experiment
 
@@ -53,6 +54,7 @@ def eval_run(path: str) -> None:
 @click.option("--tool-choice", help="Force a provider tool choice, e.g. hashread.")
 @click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False))
 @click.option("--session-db", type=click.Path(dir_okay=False), help="Path to sessions.db.")
+@click.option("--trace-db", type=click.Path(dir_okay=False), help="Path to trace.db.")
 @click.option("--continue", "continue_session", is_flag=True, help="Continue latest CLI session.")
 def chat(
     prompt: str,
@@ -66,10 +68,12 @@ def chat(
     tool_choice: str | None,
     config_path: str | None,
     session_db: str | None,
+    trace_db: str | None,
     continue_session: bool,
 ) -> None:
     _configure_logging(verbose)
     session_store = SQLiteSessionStore(session_db) if session_db else None
+    trace_store = SQLiteTraceStore(trace_db) if trace_db else None
     resume_id = (
         session_store.latest_session(source="cli")
         if session_store and continue_session
@@ -80,6 +84,7 @@ def chat(
         if config_path
         else _config(provider, model, env_key, base_url, max_tokens),
         session_store=session_store,
+        trace_store=trace_store,
         resume_session_id=resume_id,
     )
     if output_format == "stream-json":

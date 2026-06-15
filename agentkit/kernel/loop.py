@@ -36,6 +36,7 @@ class TurnResult(BaseModel):
     history: list[Message]
     usage: Usage = Field(default_factory=Usage)
     stopped: str | None = None
+    trace_id: str | None = None
     tool_results: list[ToolResult] = Field(default_factory=list)
 
 

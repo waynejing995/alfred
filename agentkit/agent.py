@@ -25,6 +25,8 @@ from agentkit.stores.memory.types import MemoryContext
 from agentkit.stores.project import resolve_project_id
 from agentkit.stores.session.base import SessionStore
 from agentkit.stores.skill.loader import Catalog, build_catalog
+from agentkit.stores.trace.recorder import TraceRecorder
+from agentkit.stores.trace.sqlite import SQLiteTraceStore
 from agentkit.subsystems.fusion import FusionPolicy, FusionProvider
 from agentkit.tools import register_builtin_tools
 
@@ -42,6 +44,7 @@ class Agent:
         memory_provider: MemoryProvider | None = None,
         skill_catalog: Catalog | None = None,
         session_store: SessionStore | None = None,
+        trace_store: SQLiteTraceStore | None = None,
         resume_session_id: str | None = None,
     ) -> None:
         self.config = _coerce_config(config)
@@ -52,6 +55,7 @@ class Agent:
         self.memory_provider = memory_provider or _memory_from_config(self.config)
         self.skill_catalog = skill_catalog or _skill_catalog_from_config(self.config)
         self.session_store = session_store
+        self.trace_store = trace_store
         self.session_id = resume_session_id or str(uuid.uuid4())
         self.history: list = (
             session_store.get_messages(resume_session_id)
@@ -88,6 +92,7 @@ class Agent:
         if self._assembler is None:
             self._assembler = self._build_assembler(prompt)
         self._ensure_session(prompt)
+        trace_recorder = self._start_trace(bus, prompt)
         if new_session:
             await bus.emit(
                 SessionStart(
@@ -118,11 +123,24 @@ class Agent:
             tool_choice=tool_choice,
         )
         result = await run_turn(ctx, prompt, stream=stream)
+        if trace_recorder is not None:
+            result.trace_id = trace_recorder.trace_id
         await asyncio.sleep(0)
         self.history = ctx.history
         self._persist_new_messages()
         self.last_events = captured
         return result
+
+    def _start_trace(self, bus: EventBus, prompt: str) -> TraceRecorder | None:
+        if self.trace_store is None:
+            return None
+        recorder = TraceRecorder(
+            self.trace_store,
+            session_id=self.session_id,
+            task=prompt,
+        )
+        recorder.attach(bus)
+        return recorder
 
     def run_sync(
         self,

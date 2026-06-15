@@ -6,6 +6,7 @@ from click.testing import CliRunner
 
 from agentkit.kernel.loop import TurnResult
 from agentkit.kernel.providers.types import Message, ToolCall, Usage
+from agentkit.stores.trace.sqlite import SQLiteTraceStore
 from agentkit_cli.main import main
 from agentkit_cli.output import render_json, render_stream_json, render_text
 
@@ -92,6 +93,52 @@ def test_cli_stream_json_output_is_valid_jsonl() -> None:
     ]
     assert frames[2]["payload"]["text"] == "mock: hello"
     assert frames[-1]["payload"]["final_message"] == "mock: hello"
+
+
+def test_cli_json_trace_opt_in_returns_trace_id(tmp_path) -> None:
+    trace_db = tmp_path / "trace.db"
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "chat",
+            "hello",
+            "--trace-db",
+            str(trace_db),
+            "--output-format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["final_message"] == "mock: hello"
+    assert payload["trace_id"]
+    trace = SQLiteTraceStore(trace_db).get_trace(payload["trace_id"])
+    assert trace.task == "hello"
+
+
+def test_cli_stream_json_trace_opt_in_returns_trace_id(tmp_path) -> None:
+    trace_db = tmp_path / "trace.db"
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "chat",
+            "hello",
+            "--trace-db",
+            str(trace_db),
+            "--output-format",
+            "stream-json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    frames = [json.loads(line) for line in result.output.splitlines()]
+    assert frames[-1]["type"] == "result"
+    assert frames[-1]["payload"]["trace_id"]
+    trace = SQLiteTraceStore(trace_db).get_trace(frames[-1]["payload"]["trace_id"])
+    assert trace.task == "hello"
 
 
 def _turn_result() -> TurnResult:
