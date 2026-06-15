@@ -48,6 +48,7 @@ class TurnCtx:
     history: list[Message] = field(default_factory=list)
     assembler: ContextAssembler | None = None
     permission: PermissionResolver = field(default_factory=PermissionResolver.default)
+    tool_scope: PermissionResolver | None = None
     autonomy: Autonomy = Autonomy.ASSIST
     agent_id: str = "root"
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -123,6 +124,14 @@ async def dispatch_tool(ctx: TurnCtx, call: ToolCall) -> ToolResult:
     entry = ctx.tools.get(call.name)
     action = _permission_action(call)
     try:
+        if ctx.tool_scope is not None:
+            ctx.tool_scope.assert_allowed(
+                tool_name=entry.name,
+                bucket="tool",
+                action=entry.name,
+                autonomy=ctx.autonomy,
+                interactive=ctx.interactive,
+            )
         ctx.permission.assert_allowed(
             tool_name=entry.name,
             bucket=entry.permission_bucket,

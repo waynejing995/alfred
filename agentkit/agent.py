@@ -23,6 +23,7 @@ from agentkit.stores.memory.base import MemoryProvider
 from agentkit.stores.memory.files import FilesMemoryProvider
 from agentkit.stores.memory.types import MemoryContext
 from agentkit.stores.project import resolve_project_id
+from agentkit.stores.skill.loader import Catalog, build_catalog
 from agentkit.tools import register_builtin_tools
 
 
@@ -37,6 +38,7 @@ class Agent:
         cwd: str | Path | None = None,
         alfred_home: str | Path | None = None,
         memory_provider: MemoryProvider | None = None,
+        skill_catalog: Catalog | None = None,
     ) -> None:
         self.config = _coerce_config(config)
         self.provider = provider or _provider_from_config(self.config)
@@ -44,11 +46,13 @@ class Agent:
         self.cwd = Path(cwd or ".").resolve()
         self.alfred_home = Path(alfred_home).expanduser() if alfred_home is not None else None
         self.memory_provider = memory_provider or _memory_from_config(self.config)
+        self.skill_catalog = skill_catalog or _skill_catalog_from_config(self.config)
         self.history: list = []
         self.session_id = str(uuid.uuid4())
         self.last_events: list[dict[str, Any]] = []
         self.last_instruction_manifest: list[dict[str, object]] = []
         self.last_memory_blocks: list[dict[str, Any]] = []
+        self.last_skill_l0: list[dict[str, str]] = []
         self._assembler: ContextAssembler | None = None
 
     async def run(self, prompt: str, *, stream: bool = False, event_sink=None) -> TurnResult:
@@ -73,6 +77,7 @@ class Agent:
                     manifest={
                         "instructions": self.last_instruction_manifest,
                         "memory": self.last_memory_blocks,
+                        "skills": self.last_skill_l0,
                     },
                 )
             )
@@ -112,8 +117,16 @@ class Agent:
                 user=user,
                 project_instructions=resolved.merged,
                 memory=memory,
+                skill_l0=self._skill_l0_text(),
             )
         )
+
+    def _skill_l0_text(self) -> str:
+        if self.skill_catalog is None:
+            self.last_skill_l0 = []
+            return ""
+        self.last_skill_l0 = self.skill_catalog.l0()
+        return self.skill_catalog.l0_text()
 
     def _prefetch_memory(self, prompt: str) -> tuple[str, str, str]:
         if self.memory_provider is None:
@@ -151,6 +164,18 @@ def _memory_from_config(config: AgentConfig | None) -> MemoryProvider | None:
         params = dict(config.memory.params)
         return FilesMemoryProvider(**params)
     raise ValueError(f"unsupported memory provider type: {config.memory.type}")
+
+
+def _skill_catalog_from_config(config: AgentConfig | None) -> Catalog | None:
+    if config is None or not config.skill_sources:
+        return None
+    roots = []
+    for source in config.skill_sources:
+        if source.type in {"dir", "bundled"}:
+            roots.append(source.params["path"])
+        else:
+            raise ValueError(f"unsupported skill source type: {source.type}")
+    return build_catalog(roots)
 
 
 def _permission_from_config(config: AgentConfig | None) -> PermissionResolver:
