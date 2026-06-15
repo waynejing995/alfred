@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.27",
     "litellm>=1.60",
     "loguru>=0.7",
+    "mcp>=1.27.2",
     "pydantic>=2.8",
     "pyyaml>=6.0",
 ]
