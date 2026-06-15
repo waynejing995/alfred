@@ -100,6 +100,14 @@ class Handoff(Event):
     payload_ref: str
 
 
+class AutonomyChanged(Event):
+    name = "autonomy_changed"
+
+    old: str
+    new: str
+    source: str
+
+
 class SubscriberError(Event):
     name = "subscriber.error"
 
@@ -113,4 +121,3 @@ class StreamDeltaEvent(Event):
     name = "stream_delta"
 
     text: str
-
