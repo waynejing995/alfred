@@ -7,8 +7,8 @@ from agentkit.kernel.providers.types import Message, ModelResponse, Usage
 
 
 class CodeAggregator:
-    def aggregate(self, responses: list[ModelResponse]) -> ModelResponse:
-        tool_response = _majority_tool_response(responses)
+    def aggregate(self, responses: list[ModelResponse], *, quorum: int = 1) -> ModelResponse:
+        tool_response = _majority_tool_response(responses, quorum=quorum)
         if tool_response is not None:
             return tool_response
         content = "\n\n".join(
@@ -25,7 +25,7 @@ class CodeAggregator:
         )
 
 
-def _majority_tool_response(responses: list[ModelResponse]) -> ModelResponse | None:
+def _majority_tool_response(responses: list[ModelResponse], *, quorum: int) -> ModelResponse | None:
     keyed = []
     for response in responses:
         if not response.message.tool_calls:
@@ -37,7 +37,9 @@ def _majority_tool_response(responses: list[ModelResponse]) -> ModelResponse | N
         keyed.append((json.dumps(signature), response))
     if not keyed:
         return None
-    winner, _count = Counter(key for key, _response in keyed).most_common(1)[0]
+    winner, count = Counter(key for key, _response in keyed).most_common(1)[0]
+    if count < quorum or count <= len(keyed) / 2:
+        raise ValueError("fusion tool-call quorum unmet")
     return next(response for key, response in keyed if key == winner)
 
 
@@ -49,4 +51,3 @@ def _sum_usage(responses: list[ModelResponse]) -> Usage:
         cached_tokens=sum(response.usage.cached_tokens for response in responses),
         cache_creation_tokens=sum(response.usage.cache_creation_tokens for response in responses),
     )
-

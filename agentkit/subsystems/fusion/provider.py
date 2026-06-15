@@ -54,7 +54,7 @@ class FusionProvider(ModelProvider):
             raise FusionQuorumError(
                 f"fusion quorum unmet: {len(responses)}/{self.policy.quorum} workers succeeded"
             )
-        return self.aggregator.aggregate(responses)
+        return self.aggregator.aggregate(responses, quorum=self.policy.quorum)
 
     async def stream(
         self,
@@ -87,4 +87,3 @@ class FusionProvider(ModelProvider):
             )
         except Exception as exc:
             return exc
-

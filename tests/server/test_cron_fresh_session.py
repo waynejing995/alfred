@@ -11,3 +11,11 @@ async def test_cron_runner_writes_output_files_with_fresh_agents(tmp_path):
     assert second.read_text(encoding="utf-8") == "mock: second"
     assert first != second
 
+
+async def test_cron_runner_rejects_unsafe_job_id(tmp_path):
+    try:
+        await CronRunner(tmp_path / "out").run_job(job_id="../bad", prompt="x")
+    except ValueError as exc:
+        assert "invalid cron job_id" in str(exc)
+    else:
+        raise AssertionError("unsafe job_id was not rejected")

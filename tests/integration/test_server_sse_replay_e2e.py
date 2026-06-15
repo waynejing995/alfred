@@ -27,7 +27,10 @@ def test_server_sse_replay_e2e_matches_turn_response():
     try:
         _wait_ready(port)
         response = httpx.post(f"http://127.0.0.1:{port}/turn", json={"prompt": "hello"})
-        sse = httpx.get(f"http://127.0.0.1:{port}/events")
+        sse = httpx.get(
+            f"http://127.0.0.1:{port}/events",
+            params={"session_id": response.json()["session_id"]},
+        )
         frames = parse_sse(sse.text)
 
         assert response.json()["final_message"] == "mock: hello"
@@ -54,4 +57,3 @@ def _wait_ready(port: int) -> None:
         except Exception:
             time.sleep(0.05)
     raise RuntimeError("server did not become ready")
-
