@@ -123,9 +123,10 @@ See origin spec §1, §8.
 
 ### Deferred to Implementation
 
-- **LiteLLM `wire_api="responses"` for the Azure key-proxy** — whether `127.0.0.1:8888`
-  requires the OpenAI Responses API vs Chat Completions; verified at e2e #1 (Decision #32,
-  research provider-layer OQ5).
+- **LiteLLM `wire_api="responses"` for the Azure key-proxy** — **CONFIRMED real (2026-06-15):**
+  `~/.codex/config.toml` `[model_providers.custom]` declares `wire_api="responses"`, so the gateway
+  DOES require the OpenAI Responses API (not Chat Completions). No longer an open question — Unit 4
+  must route the Azure worker to the Responses API; still validated end-to-end at e2e #1.
 - **`api_base` vs `base_url` / `extra_query` exact kwargs** — pinned at e2e #1 against the
   live gateway (Decision #32).
 - **sqlite-vec availability / embedding model for memory index** — chosen at memory-store
@@ -184,6 +185,11 @@ atomically-coupled group is noted.
   **Verification:**
   - `MockProvider` drives a turn with no network; all owned types round-trip via pydantic.
 
+  **Real e2e test:** `tests/e2e/test_mock_provider_e2e.py` — construct a real `Agent` with
+  `MockProvider` (no network) and run one real turn through the actual public API; assert the
+  returned `ModelResponse` has populated `message` + `usage` fields. Proves the type/ABC contract
+  works end-to-end through the real facade, not just in isolation.
+
   **E2E contract rows:** none — pure interface/types; observable only via #1, #2 once the
   loop exists.
 
@@ -229,6 +235,11 @@ atomically-coupled group is noted.
 
   **Verification:**
   - Both dispatch paths behave per policy; `subscriber.error` visible; serialization generic.
+
+  **Real e2e test:** `tests/e2e/test_event_bus_e2e.py` — instantiate a real `EventBus`, subscribe
+  one sync-veto handler that returns a veto and one async-isolated handler that raises, then emit a
+  real event. Assert the veto stops downstream dispatch, the raising background subscriber produces a
+  `subscriber.error` event, and the bus stays live for a subsequent emit.
 
   **E2E contract rows:** #18 (subscriber-raises survival).
 
@@ -313,6 +324,12 @@ atomically-coupled group is noted.
   - Prefix frozen within an epoch; cache field names match verified spec; layered merge order
     is global→nearest; `-v` shows the resolved-instruction manifest.
 
+  **Real e2e test:** `tests/e2e/test_instruction_layering_e2e.py` — build a temp dir tree with a
+  global `~/.alfred/AGENTS.md` and a project `./AGENTS.md` inside a real git repo, then run the real
+  `InstructionResolver`. Assert the merged frozen prefix contains both layers in nearest-wins order,
+  the fingerprint is stable across two resolves, and an over-cap layer logs a WARNING yet keeps its
+  content.
+
   **E2E contract rows:** #23 (layered merge + nearest-wins), #24 (instruction-source
   read-failure fail-loud). Also enables #17 (#17 needs the real provider in Unit 4).
 
@@ -338,6 +355,15 @@ atomically-coupled group is noted.
   - Verified kwargs: `api_base` (litellm kwarg) ← `base_url`; `extra_headers` ←
     `http_headers`; `extra_query` ← `query_params` (Azure `api-version`); `stream=True` +
     `stream_options={"include_usage": True}` + `litellm.stream_chunk_builder(...)`.
+  - **Real env (verified 2026-06-15, see E2E contract header):** Anthropic base URL + API key via
+    `~/.claude/settings.json` `env` (`ANTHROPIC_BASE_URL=http://127.0.0.1:8888`,
+    `ANTHROPIC_API_KEY`); model id from `ALFRED_REAL_MODEL` or the current process'
+    `ANTHROPIC_DEFAULT_*_MODEL` env (do not invent a model setting in the Claude settings file).
+    OpenAI/Azure via `~/.codex/config.toml` `[model_providers.custom]` — **`wire_api="responses"`
+    (Responses API, NOT Chat Completions; Decision #32 risk now CONFIRMED real)**,
+    `api-version=2025-04-01-preview`, header `Ocp-Apim-Subscription-Key`, base `…/openai`. Provider
+    must support routing to the Responses API for the Azure worker. Secrets via `env_key` only —
+    the real codex config's plaintext header key must be re-expressed as `${ENV}` (never copied).
   - `LiteLLMParams(extra="forbid")`: `model`, `env_key`, `base_url`, `http_headers`,
     `query_params`, `api_version`, `extra`. Factory `build_litellm_provider(p)` resolves
     `os.environ[env_key]`, fail-loud if unset.
@@ -355,6 +381,11 @@ atomically-coupled group is noted.
 
   **Verification:**
   - Only `litellm_provider.py` imports litellm (grep regression test); usage fields populate.
+
+  **Real e2e test:** `tests/e2e/test_litellm_provider_e2e.py` — drive a real `LiteLLMProvider`
+  against the local proxy loaded from the real local config files; no cassette for the live e2e.
+  Assert the response round-trips into Alfred types and usage fields are readable. Add a grep
+  assertion that only `litellm_provider.py` imports `litellm` anywhere in the package.
 
   **E2E contract rows:** none yet at unit-level (real-vendor #1/#17 land at Unit 7 once the
   loop + CLI exist; this unit is their precondition).
@@ -391,6 +422,11 @@ atomically-coupled group is noted.
 
   **Verification:**
   - Two-counter reconcile invariant holds under interleaved reserve/refund across agent_ids.
+
+  **Real e2e test:** `tests/e2e/test_iteration_budget_e2e.py` — run a real `IterationBudget` inside
+  an asyncio loop with interleaved reserve/refund calls across several distinct `agent_id`s. Assert
+  the `reconciles()` invariant holds at every step and that exhausting the budget fires a real
+  `budget_exhausted` event.
 
   **E2E contract rows:** none at unit level (negative-path #19 lands at Unit 7 with the loop).
 
@@ -447,6 +483,11 @@ atomically-coupled group is noted.
   - All 5 registries register/lookup; `_dispatch` enforces allow/ask/deny composed with
     autonomy; strictest-merge across the 3 sites holds; minimal `AgentConfig` builds a Tier-0 agent.
 
+  **Real e2e test:** `tests/e2e/test_permission_gate_e2e.py` — wire real tool/permission registries
+  to the real `PermissionResolver` and dispatch a tool through the real `_dispatch` under composed
+  allow/ask/deny rules. Assert `deny` hard-blocks even when autonomy is `auto`, and that an `ask`
+  rule resolves to `deny` when running headless (no interactive responder).
+
   **E2E contract rows:** #25 (deny hard-wall blocks a dangerous tool even in auto), #26
   (ask→confirm interactive, headless→deny). (Mechanism otherwise internal.)
 
@@ -481,11 +522,16 @@ atomically-coupled group is noted.
   - Cache stuck-at-zero WARNING lives HERE (loop), not provider: turn≥2 + prefix≥floor +
     `cached_tokens==0` → WARNING.
   - CLI is a thin consumer of the public SDK; `import alfred; Agent(config).run(...)`.
+  - `Agent` construction MUST wire `InstructionResolver` → `FrozenPrefix` → `ContextAssembler`
+    into `TurnCtx`; e2e must inspect the provider messages and prove global/project instructions
+    are present in the `system` message with the cache breakpoint attached.
   - **Output formats (cli-json-output J1-J5):** `--output-format text|json|stream-json`.
     `stream-json` = one `{type,payload}` JSONL line per event (= event-bus `serialize()`
     verbatim, J2), `stream_delta` ON; `json` = events aggregated into one terminal object
     (final message + tool trace + usage), `stream_delta` OFF; `text` = human default. NO new
-    format — same serialization SSoT as SSE, so CLI-JSON and SSE never drift.
+    format — same serialization SSoT as SSE, so CLI-JSON and SSE never drift. `stream-json`
+    e2e must assert at least one `stream_delta` frame when a streaming provider path is used; a
+    MockProvider/lifecycle-only test is not sufficient for row #29.
 
   **Patterns to follow:**
   - research kernel-loop-budget.md `run_turn`/`_dispatch` sketch; oh-my-pi hashline read format.
@@ -503,6 +549,14 @@ atomically-coupled group is noted.
   **Verification:**
   - `alfred chat` answers a real question using `hashread`; `import alfred` returns a result object;
     all three `--output-format` modes produce well-formed output from the same event stream.
+
+  **Real e2e test:** `tests/e2e/test_tier0_gate.py` (or split equivalents) — cover four real paths:
+  (1) SDK/loop/tool path with a scripted `MockProvider` forcing a `hashread` call against a temp file
+  and asserting `LINE:HASH|content` in the tool result; (2) provider-message inspection proving
+  layered instructions are actually assembled into the system prefix and cache breakpoint; (3) real
+  `alfred chat --output-format stream-json` subprocess output is valid JSONL; (4) live real-model
+  smoke + two-turn cache-hit check against the local proxy. Do not write "CLI + MockProvider triggers
+  hashread" unless the CLI exposes a scripted provider/config hook that makes that true.
 
   **E2E contract rows:** #1 (both vendors), #2 (import), #17 (cache hit both vendors), #19
   (budget exhaustion clean stop), #29 (stream-json JSONL + replay).
@@ -552,6 +606,11 @@ atomically-coupled group is noted.
   **Verification:**
   - All 7 baseline tools registered with correct default permission; fff fallback chain works;
     web_fetch SSRF denylist blocks internal addresses; hashedit rejects stale edits.
+
+  **Real e2e test:** `tests/e2e/test_tool_baseline_e2e.py` — exercise the real tools end-to-end:
+  `hashedit` a temp file then mutate it externally and assert the stale edit is rejected; run `fff`
+  over a temp tree and assert frecency ordering; assert a `bash` deny pattern blocks; and assert a
+  `web_fetch` to `127.0.0.1` is blocked by the SSRF guard.
 
   **E2E contract rows:** #27 (hashedit stale-edit rejected on real file), #28 (web_fetch SSRF
   denylist blocks `127.0.0.1:8888`). Also feeds #1 (hashread already covers the #1 file-read path).
@@ -617,6 +676,11 @@ atomically-coupled group is noted.
   **Verification:**
   - `--continue` recalls prior turn; FTS5 `search` returns ranked hits with snippets.
 
+  **Real e2e test:** `tests/e2e/test_session_store_e2e.py` — open a real SQLite `sessions.db` in a
+  temp dir and write two sessions under two different `project_id`s. Assert a `WHERE project_id`
+  query isolates each project's turns and that an FTS5 search finds the turn text; then drop the
+  `WHERE` clause and assert cross-project search returns both.
+
   **E2E contract rows:** #3 (turn-2 recalls turn-1 via FTS5).
 
 - [ ] **Unit 9: Trace store (3-level schema, SQLite + JSONL, append-only)**
@@ -662,6 +726,11 @@ atomically-coupled group is noted.
   **Verification:**
   - trace separate from session; replay set reconstructable; seal-once under cancel.
 
+  **Real e2e test:** `tests/e2e/test_trace_store_e2e.py` — write a real trajectory to a real
+  `trace.db` + JSONL in a temp dir while cancelling mid-write. Assert the terminal seal lands exactly
+  once (no duplicate JSONL line for the trajectory) and that `replay_set` returns scored rows for
+  the sealed trajectory.
+
   **E2E contract rows:** none directly (internal raw material; observed via #9 distill, #10
   evolve, #16 dream).
 
@@ -706,6 +775,11 @@ atomically-coupled group is noted.
 
   **Verification:**
   - core/ always injected; RRF retrieval ranks relevant facts; swappable interface honored.
+
+  **Real e2e test:** `tests/e2e/test_memory_store_e2e.py` — populate a real memory store (files +
+  index) in a temp dir with `core/` notes and project-scoped facts, then call the real `prefetch`.
+  Assert `core/` is always returned and that the RRF top-k facts are filtered to the requested
+  `project_id` (facts from other projects excluded).
 
   **E2E contract rows:** none directly at unit level (memory tidiness verified via #16 dream).
 
@@ -756,6 +830,11 @@ atomically-coupled group is noted.
   **Verification:**
   - precedence + shadow WARNING; `.versions/` invisible; atomic writes; `allowed-tools` enforced.
 
+  **Real e2e test:** `tests/e2e/test_skill_loader_writer_e2e.py` — set up real multi-root skill dirs
+  in temp dirs with a same-name skill in two roots; assert the loader logs a shadow WARNING and
+  skips `.versions/`. Then have the real writer add a skill via atomic `os.replace` + manifest, and
+  hand-edit a skill file on disk and assert it is detected and recorded with `origin=manual`.
+
   **E2E contract rows:** #4 (skill loaded + adopted), #5 (same-name shadow WARNING), #22 (corrupt
   skill skip).
 
@@ -799,6 +878,11 @@ atomically-coupled group is noted.
   **Verification:**
   - worker isolated (no parent context leak); budget ledgers reconcile; handoff = sole coupling.
 
+  **Real e2e test:** `tests/e2e/test_subagent_handoff_e2e.py` — use the real `Spawner`: an
+  orchestrator spawns an isolated worker with a scoped tool set. Assert the worker raises
+  `ToolScopeError` when it tries to call a tool outside its scope, and that the orchestrator and
+  worker budget ledgers reconcile after the handoff completes.
+
   **E2E contract rows:** #7 (orchestrator-worker delegation).
 
 - [ ] **Unit 13: Autonomy gate + proposal store (L8 — before any auto-loop)**
@@ -836,6 +920,11 @@ atomically-coupled group is noted.
 
   **Verification:**
   - no auto-loop constructible ungated; off halts everything; self-edit of autonomy rejected.
+
+  **Real e2e test:** `tests/e2e/test_autonomy_gate_e2e.py` — assert constructing a real auto-loop
+  without an `AutonomyGate` raises at build time; with a gate set to `autonomy=off`, run the loop and
+  assert it halts before any self-continuation; and assert a tool attempting to self-edit the
+  `autonomy` field is rejected by the gate.
 
   **E2E contract rows:** #14 (autonomy=off halts goal/distill/evolve).
 
@@ -877,6 +966,11 @@ atomically-coupled group is noted.
   **Verification:**
   - layered merge correct; no plaintext secret possible; 2-phase validation catches bad type/params.
 
+  **Real e2e test:** `tests/e2e/test_agentconfig_layering_e2e.py` — run real `AgentConfig.from_yaml`
+  over 3 layered temp config files plus environment overrides. Assert `deep_merge` precedence
+  (highest layer wins per key), that `${ENV}`/`env_key` references resolve from real env vars, and
+  that a plaintext `api_key` in a file crashes at load.
+
   **E2E contract rows:** none directly (config mechanism; exercised by #6 fusion, #15 self-edit).
 
 - [ ] **Unit 15: Goal subsystem (Codex /goal model + M5 no-progress)**
@@ -917,6 +1011,11 @@ atomically-coupled group is noted.
   **Verification:**
   - self-continues toward goal; halts on no-progress/max-continuations; respects autonomy.
 
+  **Real e2e test:** `tests/e2e/test_goal_driver_e2e.py` — set an unsatisfiable goal in a real goal
+  store (JSON file) and run the real driver loop. Assert the SHA256 no-progress detector flips the
+  goal status to `no_progress` after repeated identical states and that self-continuation halts
+  instead of looping forever.
+
   **E2E contract rows:** #8 (goal self-continues to completion), #21 (no-progress halt).
 
 - [ ] **Unit 16: Fusion provider (composite, M6 timeout/quorum/fallback)**
@@ -956,6 +1055,11 @@ atomically-coupled group is noted.
   **Verification:**
   - both vendors truly called; quorum/timeout/judge-fallback behave; tool-call vote verbatim.
 
+  **Real e2e test:** `tests/e2e/test_fusion_provider_e2e.py` — run a real `FusionProvider` over two
+  `MockProvider`s where one is deliberately slow/timeout. Assert quorum logic resolves the surviving
+  responses, that a forced judge failure falls back to the documented code path, and that a
+  tool-call vote returns one worker's response verbatim.
+
   **E2E contract rows:** #6 (forced cross-vendor fusion), #20 (worker timeout + quorum).
 
 - [ ] **Unit 17: mcp client (tools-registry source)**
@@ -990,6 +1094,11 @@ atomically-coupled group is noted.
 
   **Verification:**
   - mcp tools in one dispatch path; FILO teardown clean; secrets via env_key.
+
+  **Real e2e test:** `tests/e2e/test_mcp_manager_e2e.py` — launch a real tiny stdio MCP server as a
+  subprocess and connect to it via the real `MCPManager`. Assert its advertised tool registers in
+  the tool registry and is actually callable through the manager, and that FILO teardown across
+  multiple tasks completes with no `RuntimeError`.
 
   **E2E contract rows:** #13 (mcp tool appears + called).
 
@@ -1026,6 +1135,11 @@ atomically-coupled group is noted.
 
   **Verification:**
   - parallel mining, conflict-free merge, gated write.
+
+  **Real e2e test:** `tests/e2e/test_distill_e2e.py` — seed a real `trace.db` with a batch of traces
+  and run the real distill pass. Assert it produces a proposal that is gated (nothing written to the
+  skill store until accept) and that the distill high-water mark persisted in `trace.db` survives a
+  process restart (re-running distill does not reprocess sealed traces).
 
   **E2E contract rows:** #9 (distill proposes → confirm → new skill lands).
 
@@ -1066,6 +1180,11 @@ atomically-coupled group is noted.
   **Verification:**
   - variant scoring via shared scorer; gated merge; revert works.
 
+  **Real e2e test:** `tests/e2e/test_evolve_e2e.py` — take a real skill with a recorded trace replay
+  set and run the real evolve pass. Assert a variant is scored via `score_rollouts`, that a gated
+  merge bumps the skill version by one, and that a revert restores the prior skill directory byte-
+  for-byte.
+
   **E2E contract rows:** #10 (evolve variant → merge → version+1 → revert).
 
 - [ ] **Unit 20: dream (memory janitor, archive-not-delete)**
@@ -1098,6 +1217,11 @@ atomically-coupled group is noted.
 
   **Verification:**
   - memory tidied; skills provably untouched (no skill-store dep injected); archive reversible.
+
+  **Real e2e test:** `tests/e2e/test_dream_e2e.py` — populate a real memory store with redundant and
+  stale facts and run the real dream pass. Assert redundant facts are merged, decayed facts are moved
+  into `facts/.archive/` (not deleted), and that the skill store is provably untouched (no skill
+  dependency injected and skill file hashes unchanged).
 
   **E2E contract rows:** #16 (memory tidied, skills untouched).
 
@@ -1136,6 +1260,11 @@ atomically-coupled group is noted.
   **Verification:**
   - SSE carries enough to render; replay output matches CLI; core untouched.
 
+  **Real e2e test:** `tests/e2e/test_server_sse_replay_e2e.py` — start the real `agentkit-server`,
+  `curl -N` the SSE `/events` stream for one turn capturing the event log, then run the real replay
+  script over that log. Assert the reconstructed text matches the text produced by running the same
+  turn through the direct CLI.
+
   **E2E contract rows:** #12 (SSE replay reconstructs turn matching CLI).
 
 - [ ] **Unit 22: Cron daemon (fresh session per tick, headless host)**
@@ -1168,6 +1297,11 @@ atomically-coupled group is noted.
 
   **Verification:**
   - cron runs headless; fresh session per tick; output written.
+
+  **Real e2e test:** `tests/e2e/test_cron_e2e.py` — start the real server daemon with a cron job
+  configured to fire immediately. Assert a `cron/output/<job>/<ts>.md` file appears containing the
+  real run result and that two consecutive ticks each run in a fresh session (distinct session ids,
+  no carried-over conversation state).
 
   **E2E contract rows:** #11 (cron job runs unattended, writes output).
 
@@ -1208,6 +1342,11 @@ atomically-coupled group is noted.
   **Verification:**
   - A/B via config; shared scorer with evolve; parity guard; cost from real Usage.
 
+  **Real e2e test:** `tests/e2e/test_eval_harness_e2e.py` — run the real `alfred eval run` over a
+  2-arm experiment (kernel-only vs +subsystem) using `MockProvider`-backed tasks. Assert per-arm
+  scores and a cost delta are produced, and that the parity guard crashes when the two arms differ
+  on more than one axis.
+
   **E2E contract rows:** #29-adjacent — eval is itself observable via `alfred eval run`
   (a future e2e row; not in the carried #1-#29 set — note as a follow-up, do not invent a row here).
 
@@ -1246,6 +1385,11 @@ atomically-coupled group is noted.
   **Verification:**
   - self-edit applies on restart; autonomy self-edit blocked; wayne-* ingested.
 
+  **Real e2e test:** `tests/e2e/test_bundled_self_edit_e2e.py` — run the real bundled `alfred-agent`
+  and have it self-edit its config to change the active model, then restart the process and assert
+  the new model is in effect on the next turn. Then attempt a self-edit of the `autonomy` field and
+  assert it is rejected.
+
   **E2E contract rows:** #15 (self-edit applies on restart + autonomy edit rejected).
 
 ## E2E Verification Contract
@@ -1258,6 +1402,24 @@ atomically-coupled group is noted.
 > CLI JSON-output row (cli-json-output decision log, spec §3.7). e2e runs REAL
 > LLMs across BOTH vendors (Anthropic + OpenAI/Azure via local env / key-proxy
 > `127.0.0.1:8888`). Unit/integration tests in the units above are NOT this gate.
+>
+> **Real-LLM env sourcing (real, verified 2026-06-15).** Real-LLM e2e rows + every per-unit
+> "Real e2e test" that needs a live model load credentials from the real local files/env (do
+> NOT hard-code or invent keys):
+> - **Anthropic** ← `~/.claude/settings.json` `env` block for `ANTHROPIC_BASE_URL=http://127.0.0.1:8888`
+>   and `ANTHROPIC_API_KEY`; model id from `ALFRED_REAL_MODEL` or current process
+>   `ANTHROPIC_DEFAULT_*_MODEL`. The Claude settings file is the base-url/key source, not the model
+>   source.
+> - **OpenAI/Azure** ← `~/.codex/config.toml` `[model_providers.custom]`: `base_url=http://127.0.0.1:8888/openai`,
+>   `wire_api="responses"` (**Responses API, not Chat Completions — confirms Decision #32 / e2e #1 risk**),
+>   `query_params.api-version=2025-04-01-preview`, header `Ocp-Apim-Subscription-Key`, model `gpt-5.5`.
+> - **Secret hygiene (Decision #32.4):** the real codex config inlines the subscription key as a
+>   PLAINTEXT http header — Alfred MUST ingest it via `env_key`/`${ENV}` indirection, never copy the
+>   plaintext value into an `agent.yaml`. The test harness reads these files, exports the secrets to
+>   env, and Alfred config references them by env-var NAME.
+> - **SSRF vs proxy boundary:** the `web_fetch` SSRF guard denies `127.0.0.1:8888` (a TOOL egress),
+>   but the provider layer (LiteLLMProvider `base_url`) legitimately reaches the same proxy — two
+>   different egress paths; the SSRF denylist governs the tool only, never the provider.
 
 | # | User path | Env: process | Env: data | Env: entrypoint | Observable (pass = ?) | Status |
 |---|-----------|--------------|-----------|-----------------|----------------------|--------|
@@ -1289,7 +1451,7 @@ atomically-coupled group is noted.
 | 26 | An `ask`-tier tool is invoked interactively (confirm) and again headless (auto-deny) | `alfred chat` then `alfred-server` cron | `agent.yaml` with an `ask` tool | `alfred` CLI + daemon | interactive: user is prompted and on approve it runs; headless (no TTY): same call is **denied with a fail-loud log** ("ask downgraded to deny: no interactive channel") | ⬜ |
 | 27 | Agent edits a file with `hashedit`, but the line changed since it was read; the stale edit is rejected | `alfred chat` | a real file mutated between read and edit | `alfred` CLI | `hashedit` **rejects the stale edit** (hash mismatch) rather than corrupting the file; agent re-reads and retries | ⬜ |
 | 28 | Agent is induced to `web_fetch` an internal address; the SSRF guard blocks it | `alfred chat` | `web_fetch http://127.0.0.1:8888` (the key-proxy) | `alfred` CLI | the fetch is **denied by the SSRF denylist** (internal/metadata address); the key-proxy is never reached; log names the blocked address | ⬜ |
-| 29 | Dev runs a turn with `--output-format stream-json` and reconstructs it offline | `alfred chat --output-format stream-json` | a question that triggers a tool call | `alfred` CLI | stdout is **valid JSONL** (one `{type,payload}` event per line); a minimal replay reconstructs the full turn (user input + token reply + tool name/args/result) matching `text`-mode output — symmetric with #12 SSE | ⬜ |
+| 29 | Dev runs a turn with `--output-format stream-json` and reconstructs it offline | `alfred chat --output-format stream-json` | a question that triggers a tool call | `alfred` CLI | stdout is **valid JSONL** (one `{type,payload}` event per line) and includes `stream_delta` frames for token output; a minimal replay reconstructs the full turn (user input + token reply + tool name/args/result) matching `text`-mode output — symmetric with #12 SSE | ⬜ |
 
 ## Dead Code / Legacy Cleanup
 
