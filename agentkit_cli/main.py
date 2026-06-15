@@ -34,6 +34,7 @@ def main() -> None:
 @click.option("--env-key", default="ANTHROPIC_API_KEY", show_default=True)
 @click.option("--base-url", envvar="ANTHROPIC_BASE_URL")
 @click.option("--max-tokens", type=int)
+@click.option("--tool-choice", help="Force a provider tool choice, e.g. hashread.")
 @click.option("--session-db", type=click.Path(dir_okay=False), help="Path to sessions.db.")
 @click.option("--continue", "continue_session", is_flag=True, help="Continue latest CLI session.")
 def chat(
@@ -45,6 +46,7 @@ def chat(
     env_key: str,
     base_url: str | None,
     max_tokens: int | None,
+    tool_choice: str | None,
     session_db: str | None,
     continue_session: bool,
 ) -> None:
@@ -65,10 +67,11 @@ def chat(
             prompt,
             stream=True,
             event_sink=lambda frame: click.echo(render_stream_frame(frame)),
+            tool_choice=tool_choice,
         )
         click.echo(render_stream_frame(final_result_frame(result)))
         return
-    result = agent.run_sync(prompt)
+    result = agent.run_sync(prompt, tool_choice=tool_choice)
     rendered = render_result(result, output_format=output_format, events=agent.last_events)
     click.echo(rendered)
 

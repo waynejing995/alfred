@@ -56,6 +56,7 @@ class TurnCtx:
     interactive: bool = False
     cache_floor_tokens: int = 1024
     turn_index: int = 0
+    tool_choice: str | None = None
 
     def assemble_messages(self) -> list[Message]:
         if self.assembler is None:
@@ -171,10 +172,18 @@ async def dispatch_tool(ctx: TurnCtx, call: ToolCall) -> ToolResult:
 
 async def _model_response(ctx: TurnCtx, *, stream: bool) -> ModelResponse:
     if not stream:
-        return await ctx.provider.complete(ctx.assemble_messages(), tools=ctx.tools.tool_defs())
+        return await ctx.provider.complete(
+            ctx.assemble_messages(),
+            tools=ctx.tools.tool_defs(),
+            tool_choice=ctx.tool_choice,
+        )
 
     final_response: ModelResponse | None = None
-    async for delta in ctx.provider.stream(ctx.assemble_messages(), tools=ctx.tools.tool_defs()):
+    async for delta in ctx.provider.stream(
+        ctx.assemble_messages(),
+        tools=ctx.tools.tool_defs(),
+        tool_choice=ctx.tool_choice,
+    ):
         if delta.text:
             await ctx.bus.emit(StreamDeltaEvent(text=delta.text))
         if delta.final_response is not None:

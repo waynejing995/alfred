@@ -34,6 +34,13 @@ def test_anthropic_model_passes_cache_control():
     assert payload[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
 
 
+def test_named_tool_choice_expands_to_function_choice():
+    assert LiteLLMProvider._to_tool_choice("hashread") == {
+        "type": "function",
+        "function": {"name": "hashread"},
+    }
+
+
 def test_only_litellm_provider_imports_litellm():
     root = Path("agentkit")
     hits = [

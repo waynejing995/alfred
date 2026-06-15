@@ -136,7 +136,7 @@ class LiteLLMProvider(ModelProvider):
         if tools_payload:
             kwargs["tools"] = tools_payload
         if tool_choice:
-            kwargs["tool_choice"] = tool_choice
+            kwargs["tool_choice"] = self._to_tool_choice(tool_choice)
         return kwargs
 
     def _to_litellm_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
@@ -187,6 +187,12 @@ class LiteLLMProvider(ModelProvider):
             }
             for tool in tools
         ]
+
+    @staticmethod
+    def _to_tool_choice(tool_choice: str) -> str | dict[str, Any]:
+        if tool_choice in {"auto", "none", "required"}:
+            return tool_choice
+        return {"type": "function", "function": {"name": tool_choice}}
 
     def _to_response(self, response: Any) -> ModelResponse:
         choice = self._first_choice(response)
@@ -284,4 +290,3 @@ class LiteLLMProvider(ModelProvider):
                 for key, val in vars(value).items()
                 if not key.startswith("_")
             }
-

@@ -19,6 +19,7 @@ class MockProvider(ModelProvider):
         self._responses = list(responses or [])
         self.model = model
         self.calls: list[list[Message]] = []
+        self.tool_choices: list[str | None] = []
 
     async def complete(
         self,
@@ -28,6 +29,7 @@ class MockProvider(ModelProvider):
         **params: object,
     ) -> ModelResponse:
         self.calls.append(messages)
+        self.tool_choices.append(tool_choice)
         if self._responses:
             response = self._responses.pop(0)
         else:
@@ -99,4 +101,3 @@ class MockProvider(ModelProvider):
                 final,
             ]
         )
-

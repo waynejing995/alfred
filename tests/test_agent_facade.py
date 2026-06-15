@@ -63,3 +63,14 @@ async def test_agent_accepts_partial_tier0_config() -> None:
 
     assert result.stopped == "budget"
     assert result.tool_results[0].body == "iteration budget exhausted"
+
+
+@pytest.mark.asyncio
+async def test_agent_passes_tool_choice_to_provider() -> None:
+    provider = MockProvider(["done"])
+    agent = Agent(provider=provider)
+
+    await agent.run("use a tool", tool_choice="hashread")
+
+    assert provider.calls
+    assert provider.tool_choices == ["hashread"]

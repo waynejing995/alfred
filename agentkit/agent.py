@@ -65,7 +65,14 @@ class Agent:
         self.last_skill_l0: list[dict[str, str]] = []
         self._assembler: ContextAssembler | None = None
 
-    async def run(self, prompt: str, *, stream: bool = False, event_sink=None) -> TurnResult:
+    async def run(
+        self,
+        prompt: str,
+        *,
+        stream: bool = False,
+        event_sink=None,
+        tool_choice: str | None = None,
+    ) -> TurnResult:
         bus = EventBus()
         captured: list[dict[str, Any]] = []
 
@@ -107,6 +114,7 @@ class Agent:
             permission=permission,
             autonomy=self.config.autonomy if self.config is not None else Autonomy.ASSIST,
             session_id=self.session_id,
+            tool_choice=tool_choice,
         )
         result = await run_turn(ctx, prompt, stream=stream)
         await asyncio.sleep(0)
@@ -115,8 +123,17 @@ class Agent:
         self.last_events = captured
         return result
 
-    def run_sync(self, prompt: str, *, stream: bool = False, event_sink=None) -> TurnResult:
-        return asyncio.run(self.run(prompt, stream=stream, event_sink=event_sink))
+    def run_sync(
+        self,
+        prompt: str,
+        *,
+        stream: bool = False,
+        event_sink=None,
+        tool_choice: str | None = None,
+    ) -> TurnResult:
+        return asyncio.run(
+            self.run(prompt, stream=stream, event_sink=event_sink, tool_choice=tool_choice)
+        )
 
     def _build_assembler(self, prompt: str) -> ContextAssembler:
         resolved = InstructionResolver().resolve(self.cwd, self.alfred_home)
