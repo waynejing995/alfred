@@ -135,7 +135,9 @@ class InstructionResolver:
         try:
             content = path.read_text(encoding="utf-8")
         except OSError as exc:
-            raise InstructionReadError(f"declared instruction source cannot be read: {path}") from exc
+            raise InstructionReadError(
+                f"declared instruction source cannot be read: {path}"
+            ) from exc
         except UnicodeDecodeError as exc:
             raise InstructionReadError(f"declared instruction source is not UTF-8: {path}") from exc
         return InstructionLayer(path=path, char_count=len(content), content=content)

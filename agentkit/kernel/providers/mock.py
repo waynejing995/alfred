@@ -86,7 +86,7 @@ class MockProvider(ModelProvider):
         arguments: dict[str, Any],
         call_id: str = "call_1",
         final: str = "done",
-    ) -> "MockProvider":
+    ) -> MockProvider:
         from agentkit.kernel.providers.types import ToolCall
 
         return cls(

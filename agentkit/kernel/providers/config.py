@@ -48,7 +48,9 @@ def build_litellm_provider(params: LiteLLMParams):
     if params.env_key:
         api_key = os.environ.get(params.env_key)
         if not api_key:
-            raise ConfigError(f"env_key {params.env_key!r} referenced by model config is unset/empty")
+            raise ConfigError(
+                f"env_key {params.env_key!r} referenced by model config is unset/empty"
+            )
     query_params = dict(params.query_params)
     if params.api_version and "api-version" not in query_params:
         query_params["api-version"] = params.api_version
@@ -61,4 +63,3 @@ def build_litellm_provider(params: LiteLLMParams):
         query_params=query_params,
         extra=params.extra,
     )
-

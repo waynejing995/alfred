@@ -39,7 +39,7 @@ class FrozenPrefix(BaseModel):
         memory: str = "",
         skill_l0: str = "",
         goal: str | None = None,
-    ) -> "FrozenPrefix":
+    ) -> FrozenPrefix:
         data = {
             "tools": [tool.model_dump(mode="json") for tool in tools or []],
             "persona": persona,

@@ -27,7 +27,7 @@ class ToolCall(BaseModel):
     raw_arguments: str = ""
 
     @classmethod
-    def from_raw(cls, *, id: str, name: str, raw_arguments: str | None) -> "ToolCall":
+    def from_raw(cls, *, id: str, name: str, raw_arguments: str | None) -> ToolCall:
         raw = raw_arguments or "{}"
         try:
             parsed = json.loads(raw)

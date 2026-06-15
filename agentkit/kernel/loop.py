@@ -176,7 +176,11 @@ def _warn_if_cache_stuck(ctx: TurnCtx, response: ModelResponse) -> None:
         return
     prefix_tokens = ctx.assembler.prefix.token_floor_estimate()
     if prefix_tokens < ctx.cache_floor_tokens:
-        logger.debug("prefix below cache floor: prefix={} floor={}", prefix_tokens, ctx.cache_floor_tokens)
+        logger.debug(
+            "prefix below cache floor: prefix={} floor={}",
+            prefix_tokens,
+            ctx.cache_floor_tokens,
+        )
         return
     logger.warning(
         "cache_read stayed 0 on turn {} (prefix={} >= floor={}); prompt cache is not engaging",
@@ -195,4 +199,3 @@ def emit_budget_event_to_bus(bus: EventBus):
         loop.create_task(bus.emit(event))
 
     return handler
-

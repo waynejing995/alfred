@@ -2,20 +2,20 @@ from __future__ import annotations
 
 import fnmatch
 import sys
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
 from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
 
-class Permission(str, Enum):
+class Permission(StrEnum):
     ALLOW = "allow"
     ASK = "ask"
     DENY = "deny"
 
 
-class Autonomy(str, Enum):
+class Autonomy(StrEnum):
     OFF = "off"
     ASSIST = "assist"
     AUTO = "auto"
@@ -58,7 +58,7 @@ class PermissionResolver:
         self.layers = layers or []
 
     @classmethod
-    def default(cls) -> "PermissionResolver":
+    def default(cls) -> PermissionResolver:
         return cls(
             [
                 PermissionLayer(
@@ -79,7 +79,7 @@ class PermissionResolver:
             ]
         )
 
-    def with_layer(self, layer: PermissionLayer) -> "PermissionResolver":
+    def with_layer(self, layer: PermissionLayer) -> PermissionResolver:
         return PermissionResolver([*self.layers, layer])
 
     def resolve(self, *, bucket: str, action: str = "*") -> PermissionDecision:
@@ -131,7 +131,9 @@ class PermissionResolver:
                 tool_name,
                 bucket,
             )
-            raise PermissionDenied(f"tool {tool_name!r} requires confirmation but no TTY is present")
+            raise PermissionDenied(
+                f"tool {tool_name!r} requires confirmation but no TTY is present"
+            )
         # Tier-0 deliberately does not implement a prompt UI; CLI/server own that surface.
         raise PermissionDenied(f"tool {tool_name!r} requires interactive confirmation")
 
@@ -178,4 +180,3 @@ class PermissionResolver:
 
 def permission_from_literal(value: Literal["allow", "ask", "deny"] | str) -> Permission:
     return Permission(value)
-
