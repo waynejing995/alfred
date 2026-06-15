@@ -23,7 +23,14 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["agentkit*", "agentkit_cli*", "agentkit_server*", "alfred*", "agentkit_fff_*"]
+include = [
+    "agentkit*",
+    "agentkit_cli*",
+    "agentkit_eval*",
+    "agentkit_server*",
+    "alfred*",
+    "agentkit_fff_*",
+]
 
 [dependency-groups]
 dev = [

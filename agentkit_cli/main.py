@@ -3,16 +3,31 @@ from __future__ import annotations
 import sys
 
 import click
+import yaml
 from loguru import logger
 
 from agentkit import Agent
 from agentkit.stores.session.sqlite import SQLiteSessionStore
 from agentkit_cli.output import OutputFormat, final_result_frame, render_result, render_stream_frame
+from agentkit_eval import Experiment, run_experiment
 
 
 @click.group()
 def main() -> None:
     """Alfred command line interface."""
+
+
+@main.group()
+def eval() -> None:
+    """Evaluation commands."""
+
+
+@eval.command("run")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False))
+def eval_run(path: str) -> None:
+    with open(path, encoding="utf-8") as handle:
+        experiment = Experiment.model_validate(yaml.safe_load(handle))
+    click.echo(render_stream_frame(run_experiment(experiment)))
 
 
 @main.command()
