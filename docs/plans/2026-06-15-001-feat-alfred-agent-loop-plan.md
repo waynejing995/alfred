@@ -14,9 +14,11 @@ decisions: docs/decisions/2026-06-15-hermes-agent-loop-decisions.md
 Alfred is a minimal, frontier-design agent-loop kernel shipped SDK-first (pure-Python
 core, zero UI deps) with every advanced capability (memory, skills, distill, dream,
 evolve, goal, fusion, handoff, mcp) as a swappable, A/B-able subsystem. This plan
-sequences the build kernel-first: Tier-0 (loop + session + skill-loader + one tool +
-one real provider) reaches a working end-to-end conversation first, then Ring-2 stores
-and Ring-3 subsystems attach in dependency order. Each unit maps ~1:1 to a commit.
+sequences the build kernel-first: Tier-0 (Ring-1 kernel + permission + one tool + one real
+provider + CLI) reaches a working end-to-end conversation first. Ring-2 stores
+(session/trace/memory/skill-loader) then attach in dependency order and must be wired back
+into the frozen-prefix/session lifecycle before they are considered complete. Each unit maps
+~1:1 to a commit.
 
 ## Problem Frame
 
@@ -129,10 +131,51 @@ See origin spec §1, §8.
   must route the Azure worker to the Responses API; still validated end-to-end at e2e #1.
 - **`api_base` vs `base_url` / `extra_query` exact kwargs** — pinned at e2e #1 against the
   live gateway (Decision #32).
-- **sqlite-vec availability / embedding model for memory index** — chosen at memory-store
-  implementation against the local env (research store-memory).
+- **Memory backend choice** — RESOLVED by user after audit: no Zep/Graphiti default in MVP
+  because the useful Zep/Graphiti path brings graph DB / service and embedding dependencies.
+  MVP returns to the low-dependency files+SQLite baseline so dream can operate on simple
+  human-readable facts. Zep/Graphiti remains a future `MemoryProvider` adapter/A-B arm, not
+  a runtime dependency.
 - **Exact fleet width W / merge batch B_merge for distill** — bounded by a Semaphore,
   tuned at implementation against rate limits (research subsystem-distill).
+
+## Plan Alignment Corrections (Subagent Audit)
+
+Two independent read-only audits were run before continuing beyond Unit 10. These corrections
+are now part of the plan and are blocking for future "done" claims:
+
+- **Store scope SSoT:** DB is only for session, trace, and memory facts/indexes. Skill content
+  and versions are pure files under active skill dirs and `.versions/`; goal is JSON; distill
+  cursors/proposals live in `trace.db` meta tables. Do not reintroduce a DB skill-version
+  ledger or startup db-vs-file drift check.
+- **Tier-0 meaning:** Unit 7 is the v1 vertical slice. Session, trace, memory, and skill-loader
+  are Ring-2 follow-on units; the overview and verification language must not claim they were
+  part of Tier-0 unless they are actually wired.
+- **Context assembly completeness:** `Agent` session_start must assemble the full frozen order:
+  `persona -> user -> project_instructions -> memory(facts) -> skill_l0`. A store unit is only
+  "complete" when its data can be wired into this prefix or when the plan explicitly marks it
+  as a store-only milestone with a later integration gate.
+- **Memory backend decision:** MVP memory is low-dependency files + SQLite FTS/entity/recency
+  retrieval, no embedding dependency. Zep/Graphiti is future adapter work. Do not call the
+  default implementation "semantic cosine" unless embeddings are actually implemented.
+- **`allowed-tools` enforcement:** plan must define a concrete `ToolCallContext` / permission
+  scope before coding skill enforcement. Skill `allowed-tools` narrows tool permissions only
+  while executing an explicit skill invocation, not merely because the model viewed a skill.
+- **`ask` permission:** Unit 6 needs a minimal `ConfirmHandler`/headless policy if it interprets
+  `ask`; Unit 13 later upgrades the global autonomy gate. Do not leave ask-confirm behavior
+  implicit.
+- **Event veto:** `pre_tool` veto must propagate as a control signal, not be swallowed as a
+  generic tool exception.
+- **Real e2e contract vs unit e2e:** unit/e2e tests may use mocks for local regression, but
+  `wayne-verify` real contract rows #1/#17/#29 must run the actual CLI/provider path. Both
+  vendors are mandatory in the verify profile.
+- **`fff` packaging:** Unit 7b is incomplete until a real companion package/binary path exists
+  or the plan explicitly downgrades `fff` to fallback-only. The decision remains "bundled
+  per-platform binary"; fallback tests alone do not satisfy it.
+- **`stream-json`:** row #29 requires `stream_delta` frames from a streaming provider path.
+  Lifecycle-only JSONL is not sufficient.
+- **`score_rollouts()` dependency:** evolve cannot depend on Unit 24. Either run eval-harness
+  before evolve or extract `score_rollouts()` into a small shared unit before Unit 19.
 
 ## Implementation Units
 
@@ -285,9 +328,9 @@ atomically-coupled group is noted.
     own independent budget). No AGENTS.md anywhere = DEBUG (normal). A *declared* source that
     can't be read (permission / missing-after-declared / decode failure) = **fail-loud**.
   - **Observability (L9-F1):** at session_start emit a **DEBUG-only resolved-instruction
-    manifest** (ordered layers: path + char-count + included/truncated/skipped), shown under
-    `-v`. The two WARNINGs (read-failure, truncation) stay default-visible. Normal load =
-    quiet; fault = loud.
+    manifest** (ordered layers: path + char-count + included/skipped/over_cap), shown under
+    `-v`. The two WARNINGs (read-failure, over-cap-but-included-uncut) stay default-visible.
+    Normal load = quiet; fault = loud.
   - **Disable/A-B (L8):** `instructions.enabled` config toggle (default true) for eval-harness
     A/B arms.
   - `ContextAssembler(prefix, rolling_breakpoints=0)`: `assemble(tail) -> AssembledPrompt`
@@ -450,6 +493,10 @@ atomically-coupled group is noted.
   **Approach:**
   - Registries: `tools` (name+schema+handler), `events`, `models`, `skill_sources`,
     `middleware`. Mechanism open, catalog converged (no speculative tables).
+  - Introduce `ToolCallContext` now: `agent_id`, optional `skill_name`, `permission_layers`,
+    `autonomy_level`, `interactive`, and `confirm_handler`. Unit 6 owns raw permission resolution
+    and the minimal ask/headless policy; Unit 13 replaces/extends `autonomy_level` with the full
+    `AutonomyGate` object. This prevents `ask` semantics from floating until Unit 13.
   - **Permission gate (T1/T3):** `Permission` = allow/ask/deny. `_dispatch` consults
     `PermissionResolver` BEFORE running a tool. **Compose with autonomy (T3):** `allow`→run;
     `deny`→block (all autonomy levels, incl. auto — deny is a hard wall); `ask`→ off:deny /
@@ -461,7 +508,8 @@ atomically-coupled group is noted.
     (extra="forbid")`: `type`, `params`. `resolve(spec, registry)` recurses nested specs. Full
     env layering / autonomy gate object / proposal store deferred to Unit 14.
   - Tool dispatch contract: `_dispatch(ctx, call)` → permission check → catches tool exceptions
-    → `ToolResult(ok=False, is_error=True)`, re-raises `VetoError`.
+    → `ToolResult(ok=False, is_error=True)`, re-raises/returns explicit `VetoError` path for
+    `pre_tool` vetoes (not swallowed by the generic catch).
   - **Observability (T11-F):** a deny/ask that blocks a call logs a default-visible line naming
     tool + deciding layer; resolved per-tool permission joins the `-v` manifest (shared with
     instruction manifest, Unit 3).
@@ -475,8 +523,9 @@ atomically-coupled group is noted.
     `{type,params}` model spec to a provider.
   - Edge case: `bash` with `rm *` pattern → deny even under autonomy=auto (hard wall);
     `ask` under headless (no TTY) → downgraded to deny + fail-loud log.
-  - Edge case: skill `allowed-tools` narrows a config-`allow` to deny → strictest wins; a layer
-    attempting to widen deny→allow has no effect.
+  - Edge case: skill `allowed-tools` narrows a config-`allow` to deny → strictest wins once Unit
+    11 supplies a concrete `skill_name`/tool-scope; Unit 6 may test the resolver primitive, but
+    not claim full skill enforcement before the skill loader exists.
   - Error path: unknown `type` → `UnknownComponentType`; extra key in config → crash.
 
   **Verification:**
@@ -515,13 +564,17 @@ atomically-coupled group is noted.
   **Approach:**
   - `run_turn(ctx)`: assemble messages → `ctx.budget.reserve()` → `provider.complete()` →
     parse → permission-check + `_dispatch` tool → emit lifecycle events → repeat until no tool call.
+    A `pre_tool` veto is a control signal and must propagate/return a vetoed tool result; it must
+    not be swallowed by a broad tool-exception catch as an ordinary tool failure.
   - `hashread`: read file, tag each line `LINE:HASH|content` (2-char content hash) — the read
     half of the hashline pair; `read` permission = allow (T6).
   - Tool-call parsing: single-pass, exact-match, adversarial test inputs for malformed
     calls (KB `parser-asymmetry-pitfalls`).
   - Cache stuck-at-zero WARNING lives HERE (loop), not provider: turn≥2 + prefix≥floor +
     `cached_tokens==0` → WARNING.
-  - CLI is a thin consumer of the public SDK; `import alfred; Agent(config).run(...)`.
+  - CLI is a thin consumer of the public SDK; `import alfred; Agent(config).run(...)`. CLI must
+    load/register the built-in tools by default (or via explicit config) so contract row #1 can
+    exercise the real `hashread` path without hand-injected test fixtures.
   - `Agent` construction MUST wire `InstructionResolver` → `FrozenPrefix` → `ContextAssembler`
     into `TurnCtx`; e2e must inspect the provider messages and prove global/project instructions
     are present in the `system` message with the cache breakpoint attached.
@@ -554,9 +607,12 @@ atomically-coupled group is noted.
   (1) SDK/loop/tool path with a scripted `MockProvider` forcing a `hashread` call against a temp file
   and asserting `LINE:HASH|content` in the tool result; (2) provider-message inspection proving
   layered instructions are actually assembled into the system prefix and cache breakpoint; (3) real
-  `alfred chat --output-format stream-json` subprocess output is valid JSONL; (4) live real-model
-  smoke + two-turn cache-hit check against the local proxy. Do not write "CLI + MockProvider triggers
-  hashread" unless the CLI exposes a scripted provider/config hook that makes that true.
+  `alfred chat --output-format stream-json` subprocess output is valid JSONL and includes
+  `stream_delta`; (4) live real-model smoke + two-turn cache-hit check against the local proxy.
+  Contract row #1 additionally needs a deterministic real-provider tool-call path: either force
+  `tool_choice=hashread` or use a fixture prompt proven against both Anthropic and OpenAI/Azure.
+  Do not write "CLI + MockProvider triggers hashread" unless the CLI exposes a scripted
+  provider/config hook that makes that true.
 
   **E2E contract rows:** #1 (both vendors), #2 (import), #17 (cache hit both vendors), #19
   (budget exhaustion clean stop), #29 (stream-json JSONL + replay).
@@ -579,6 +635,13 @@ atomically-coupled group is noted.
     `test_bash_deny_patterns.py`, `test_web_fetch_ssrf.py`
 
   **Approach:**
+  - **Packaging contract (T5):** `fff` is a real bundled executable delivered by
+    per-platform companion packages (`agentkit-fff-linux-x64`, `agentkit-fff-macos-arm64`,
+    `agentkit-fff-win-x64`). The main package discovers the matching companion package at runtime
+    and falls back only when no supported binary is present. The companion package must include
+    an executable `bin/fff` or equivalent locator; a package stub without a binary is not complete.
+    The fff index/frecency state lives under `~/.alfred/fff/` (or `ALFRED_HOME/fff/`), never in the
+    project tree.
   - **hashedit (T4/T6a):** anchor on `LINE:HASH`; if hash changed since read → reject (stale,
     fail-loud) — closes the "what I read == what I edit" invariant by mechanism, not by trusting
     model recall (KB `llm-prompt-and-boundary-contracts`). `hashread`+`hashedit` = paired system.
@@ -604,31 +667,34 @@ atomically-coupled group is noted.
   - Error path: `bash rm -rf` → deny; `web_fetch http://127.0.0.1:8888` → deny (SSRF guard).
 
   **Verification:**
-  - All 7 baseline tools registered with correct default permission; fff fallback chain works;
-    web_fetch SSRF denylist blocks internal addresses; hashedit rejects stale edits.
+  - All 7 baseline tools registered with correct default permission; real bundled fff binary path
+    works on the current platform or the unit is explicitly marked fallback-only; fff fallback chain
+    works; web_fetch SSRF denylist blocks internal addresses; hashedit rejects stale edits.
 
   **Real e2e test:** `tests/e2e/test_tool_baseline_e2e.py` — exercise the real tools end-to-end:
-  `hashedit` a temp file then mutate it externally and assert the stale edit is rejected; run `fff`
-  over a temp tree and assert frecency ordering; assert a `bash` deny pattern blocks; and assert a
-  `web_fetch` to `127.0.0.1` is blocked by the SSRF guard.
+  `hashedit` a temp file then mutate it externally and assert the stale edit is rejected; run the
+  bundled `fff` binary over a temp tree and assert backend=`fff` plus ranking/frecency behavior
+  (separate fallback test covers rg/python); assert a `bash` deny pattern blocks; and assert a
+  `web_fetch` to `127.0.0.1` is blocked by the SSRF guard. Also add a DNS-to-private regression
+  before declaring SSRF complete.
 
   **E2E contract rows:** #27 (hashedit stale-edit rejected on real file), #28 (web_fetch SSRF
   denylist blocks `127.0.0.1:8888`). Also feeds #1 (hashread already covers the #1 file-read path).
 
 ### Milestone B — Ring-2 Stores
 
-> **Store scope (RESOLVED — store-scope decision log S1-S7):** all stores live under
+> **Store scope (RESOLVED — store-scope decision log S1-S6, S9):** all stores live under
 > `~/.alfred/` (global home, NOT in-project — S1). Isolation = **a `project_id` column +
 > `WHERE project_id=?`**, NOT per-project dirs/db files (S1a) — cross-project search = drop the
 > WHERE. **Global (no project_id):** memory `core/` (persona/user). **Per-project (project_id):**
 > session, trace, memory `facts/` (S2). `project_id` = normalized path of the project root,
 > discovered via layered-instructions L4a (git-root walk, cwd fallback) — ONE "project"
 > definition shared with instructions (S5); MVP accepts move/rename breakage (S3, relink = TODO).
-> **DB is the unified ledger + process-state substrate** for Ring-2/3 (S6): filesystem holds
-> content bytes (active skill dir + `.versions/vN/` whole-dir archives incl. ref/script), DB
-> holds the version ledger + lesson-bank + distill/evolve process state. **On-disk active
-> `SKILL.md` is SSoT for "what loads"; DB is history/selection ledger; startup drift check →
-> WARNING, disk wins (S7).**
+> **DB scope is intentionally narrow** (S6/S9): DB is used for `sessions.db`, `trace.db`, and
+> memory facts/indexes only. Skill content and versions are pure files (`SKILL.md`,
+> `.versions/vN/`, `manifest.json`); goal state is a JSON file; distill cursors/proposal queue
+> are small trace.db meta tables. **On-disk active `SKILL.md` is the SSoT for "what loads"**;
+> archived versions are cold backup only and never scanned by the loader.
 
 - [ ] **Unit 8: Session store (SQLite WAL + FTS5)**
 
@@ -674,12 +740,14 @@ atomically-coupled group is noted.
   - Error path: concurrent writers → `BEGIN IMMEDIATE` + retry, no corruption.
 
   **Verification:**
-  - `--continue` recalls prior turn; FTS5 `search` returns ranked hits with snippets.
+  - Store-level: FTS5 `search` returns ranked hits with snippets and project scoping holds.
+    Runtime-level row #3 is not complete until CLI/Agent `--continue` is wired to this store.
 
   **Real e2e test:** `tests/e2e/test_session_store_e2e.py` — open a real SQLite `sessions.db` in a
   temp dir and write two sessions under two different `project_id`s. Assert a `WHERE project_id`
   query isolates each project's turns and that an FTS5 search finds the turn text; then drop the
-  `WHERE` clause and assert cross-project search returns both.
+  `WHERE` clause and assert cross-project search returns both. Add a later CLI e2e for
+  `alfred chat --continue` once Agent/CLI integration lands.
 
   **E2E contract rows:** #3 (turn-2 recalls turn-1 via FTS5).
 
@@ -714,6 +782,9 @@ atomically-coupled group is noted.
     emits idempotent.
   - Query API: `replay_set(skill_name, min_outcome_quality)`, `failure_set`/`success_set`.
   - Candidate-filter (#20b): missing trace = silent DEBUG skip; detector *raising* = surface it.
+  - Add a `TraceRecorder` event subscriber in this unit or a clearly named follow-up integration
+    unit. Store-only direct tests do not prove the loop actually writes traces at `pre_tool`,
+    `post_tool`, and `turn_end`.
 
   **Patterns to follow:**
   - research store-trace.md 3-level schema + annotation ladder.
@@ -724,27 +795,31 @@ atomically-coupled group is noted.
   - Error path: cancel mid-write → terminal seal lands exactly once (no double JSONL line).
 
   **Verification:**
-  - trace separate from session; replay set reconstructable; seal-once under cancel.
+  - trace separate from session; replay set reconstructable; seal-once under cancel. Runtime
+    trace-capture verification is required before consumers (distill/evolve/dream) rely on it.
 
   **Real e2e test:** `tests/e2e/test_trace_store_e2e.py` — write a real trajectory to a real
   `trace.db` + JSONL in a temp dir while cancelling mid-write. Assert the terminal seal lands exactly
   once (no duplicate JSONL line for the trajectory) and that `replay_set` returns scored rows for
-  the sealed trajectory.
+  the sealed trajectory. Add a loop-driven e2e that runs a real tool call and verifies trace rows
+  were written by event subscribers before marking Unit 9 integrated.
 
   **E2E contract rows:** none directly (internal raw material; observed via #9 distill, #10
   evolve, #16 dream).
 
-- [ ] **Unit 10: Memory store (files + RRF retrieval, swappable)**
+- [ ] **Unit 10: Memory store (low-dependency files + SQLite retrieval, swappable)**
 
-  **Goal:** cross-session facts SSoT — `core/` always-injected + retrieved `facts/` via RRF;
-  swappable `MemoryProvider` interface.
+  **Goal:** cross-session facts SSoT — `core/` always-injected + retrieved `facts/` via a
+  low-dependency file/SQLite baseline; swappable `MemoryProvider` interface. Zep/Graphiti/mem0
+  are future adapters/A-B arms, not MVP runtime dependencies.
   **Requirements:** R3
   **Dependencies:** Unit 8 (WAL helper), Unit 3 (frozen-prefix injection)
   **Decision trace:** #17a; research store-memory.md
 
   **Files:**
   - Create: `agentkit/stores/memory/base.py` (`MemoryProvider` ABC), `files.py` (default impl),
-    `types.py` (`RetrievedMemory`, `MemoryBlock`, `MemoryWrite`), `index.py` (FTS5+vec+entity)
+    `types.py` (`RetrievedMemory`, `MemoryBlock`, `MemoryWrite`), `index.py` (FTS5+entity+recency;
+    no embedding dependency in MVP)
   - Create: `agentkit/tools/memory.py` (`memory_append`/`memory_replace`/`memory_search` tools)
   - Test: `tests/stores/test_memory.py`, `test_memory_rrf.py`
 
@@ -756,11 +831,16 @@ atomically-coupled group is noted.
     always verbatim; these ARE the persona/user instruction layers from layered-instructions L2),
     `facts/<slug>.md` (frontmatter `id`/`summary`/`entities`/`source_session`), `index.db`
     (rebuildable derived index; **facts rows carry `project_id`**, store-scope S2).
-  - Retrieval = 3 parallel passes (BM25 / semantic cosine over `summary` / entity overlap)
-    fused by **RRF `score = Σ 1/(k + rank_i)`** (no tuned weights), top-k=10. **Facts retrieval
-    default `WHERE project_id=?`** (current project only, S4); single index → "project+global
-    merged retrieval" later = just widen the WHERE (seam left, not built).
-  - Frozen-prefix order: persona → user → retrieved facts (matches Unit 3 / L6). Mid-session
+  - Retrieval = low-dependency passes (BM25 over summary/body, summary lexical overlap,
+    entity overlap, and optional recency) fused by **RRF `score = Σ 1/(k + rank_i)`** (no tuned
+    weights), top-k=10. **No embedding/semantic-cosine dependency in MVP.** Facts retrieval
+    default `WHERE project_id=?` (current project only, S4); single index → "project+global
+    merged retrieval" later = just widen the WHERE (seam left, not built). Zep/Graphiti's useful
+    shape (temporal facts/entities/relations) remains a future `MemoryProvider` adapter; do not
+    pull graph DB/embedding dependencies into the default store.
+  - Frozen-prefix order is the full L6 order: persona → user → project_instructions →
+    memory(facts) → skill_l0. Unit 10 must expose `prefetch()` data so `Agent` can feed
+    `FrozenPrefix.memory`; otherwise it is only a store-only partial milestone. Mid-session
     `memory_*` writes durable store only, take effect next session. `memory_search` results
     turn-local. NO `memory_delete` for agent (dream-only).
   - Reuse Unit 8 WAL for `index.db`; per-fact atomic-rename writes.
@@ -774,12 +854,15 @@ atomically-coupled group is noted.
   - Error path: corrupt fact file → skip + WARNING, retrieval continues.
 
   **Verification:**
-  - core/ always injected; RRF retrieval ranks relevant facts; swappable interface honored.
+  - core/ always injected; low-dependency RRF retrieval ranks relevant facts; current-project
+    facts do not leak; swappable interface honored; `Agent` frozen prefix receives memory facts
+    when a memory provider is configured.
 
   **Real e2e test:** `tests/e2e/test_memory_store_e2e.py` — populate a real memory store (files +
-  index) in a temp dir with `core/` notes and project-scoped facts, then call the real `prefetch`.
-  Assert `core/` is always returned and that the RRF top-k facts are filtered to the requested
-  `project_id` (facts from other projects excluded).
+  index) in a temp dir with `core/` notes and project-scoped facts, then call the real `prefetch`
+  and a real `Agent` session_start. Assert `core/` is always returned, RRF top-k facts are filtered
+  to the requested `project_id` (facts from other projects excluded), and those facts appear in the
+  frozen system prefix without mutating mid-session after `memory_append`.
 
   **E2E contract rows:** none directly at unit level (memory tidiness verified via #16 dream).
 
@@ -806,7 +889,11 @@ atomically-coupled group is noted.
   - `SkillFrontmatter(extra="ignore")` lenient (untrusted third-party); `SkillFilter(extra="forbid")`
     owned. M7: catalog error (bad YAML/name≠dirname/unreadable) → WARNING+skip, recorded in
     `Catalog.errors`; config error (unknown `skill_filter` key) → crash.
-  - **`allowed-tools` enforced** (tools-permission T10): feeds the permission narrow-layer.
+  - **`allowed-tools` enforced** (tools-permission T10): feeds the permission narrow-layer for
+    explicit skill execution only. `skill_view(name)` establishes a skill invocation context
+    for the current skill-run/worker scope; the model merely viewing L1 does not permanently
+    narrow all later unrelated tool calls. Multiple active skills must not merge into a broader
+    permission set; the strictest currently executing skill scope wins.
   - **Storage = pure files (store-scope S6-narrowed; NO DB for skills):** active skill is a
     DIRECTORY (SKILL.md + `references/`+`scripts/`+`assets/`); version archives are whole-dir
     snapshots under `.versions/vN/` (incl. ref/script); `manifest.json` = active pointer + history
@@ -828,12 +915,15 @@ atomically-coupled group is noted.
   - Error path: corrupt skill → catalog-error skip + WARNING; good skills still load.
 
   **Verification:**
-  - precedence + shadow WARNING; `.versions/` invisible; atomic writes; `allowed-tools` enforced.
+  - precedence + shadow WARNING; `.versions/` invisible; atomic writes; `allowed-tools` enforced;
+    skill L0 is actually injected into the frozen prefix when the loader is configured.
 
   **Real e2e test:** `tests/e2e/test_skill_loader_writer_e2e.py` — set up real multi-root skill dirs
   in temp dirs with a same-name skill in two roots; assert the loader logs a shadow WARNING and
-  skips `.versions/`. Then have the real writer add a skill via atomic `os.replace` + manifest, and
-  hand-edit a skill file on disk and assert it is detected and recorded with `origin=manual`.
+  skips `.versions/`. Then have the real writer add a skill via atomic `os.replace` + manifest;
+  hand-edit a skill file on disk and assert the edited active `SKILL.md` is what loads (origin stays
+  `human` or unchanged; do not invent `origin=manual`, which was removed by store-scope S8/S9).
+  Also assert `allowed-tools` blocks a disallowed tool under an explicit skill invocation.
 
   **E2E contract rows:** #4 (skill loaded + adopted), #5 (same-name shadow WARNING), #22 (corrupt
   skill skip).
@@ -1148,7 +1238,10 @@ atomically-coupled group is noted.
   **Goal:** mutate skills with trace → score variants on replay set (success+failure) → keep
   best + version; merge gated; shares `score_rollouts()` with eval.
   **Requirements:** R4
-  **Dependencies:** Unit 9 (replay_set), Unit 11 (writer M4), Unit 13 (gate), Unit 24 (score_rollouts)
+  **Dependencies:** Unit 9 (replay_set), Unit 11 (writer M4), Unit 13 (gate), and the shared
+  `score_rollouts()` helper. Implementation-order correction: `score_rollouts()` is owned by
+  eval-harness (Unit 23), not Unit 24; either run Unit 23 before Unit 19 or extract a small shared
+  scorer micro-unit before both evolve and eval.
   **Decision trace:** #18a, #20a, #20b, M4 (arxiv 2605.21810); research subsystem-evolve.md
 
   **Files:**
@@ -1162,7 +1255,7 @@ atomically-coupled group is noted.
     presence; missing = silent DEBUG skip (#20b).
   - `SelectQ(S) = -1 if blocked else PassRate(S)+ε·U(S)`; `U=0.60·F_LCB+0.20·F̄_progress+
     0.20·Q_skill`; `F_LCB=max(0, F̄_progress − 1.96·σ/√R)`, R≈4. Re-rollout (preferred) or
-    replay-judge fallback. **Reuse `score_rollouts()` from eval (Unit 24), not re-implemented.**
+    replay-judge fallback. **Reuse `score_rollouts()` from eval (Unit 23), not re-implemented.**
   - M4: `SkillStoreWriter.commit_version` (lock + whole-dir archive → `.versions/vN/` + os.replace
     + `manifest.json` last as commit point; `origin=evolve`). Lesson-bank + candidate metrics +
     pass-rate persist in `.versions/<v>/lesson_bank.json` + manifest (files, store-scope S6-narrowed —
@@ -1420,10 +1513,15 @@ atomically-coupled group is noted.
 > - **SSRF vs proxy boundary:** the `web_fetch` SSRF guard denies `127.0.0.1:8888` (a TOOL egress),
 >   but the provider layer (LiteLLMProvider `base_url`) legitimately reaches the same proxy — two
 >   different egress paths; the SSRF denylist governs the tool only, never the provider.
+> - **Verify profile vs local regression:** normal `uv run pytest` may use mocks and may skip
+>   unavailable live-provider tests for local development. `wayne-verify` uses the real-case profile
+>   and must treat rows #1/#17/#29 as non-skippable: Anthropic and OpenAI/Azure both run, row #1
+>   executes a real CLI hashread tool call, row #17 proves cache hits, row #29 proves stream deltas
+>   and replay.
 
 | # | User path | Env: process | Env: data | Env: entrypoint | Observable (pass = ?) | Status |
 |---|-----------|--------------|-----------|-----------------|----------------------|--------|
-| 1 | Dev starts CLI, asks a question; agent calls a read-file tool and answers with the file content (run TWICE: Anthropic, then OpenAI) | `alfred chat` (in-process) | real `hello.txt` | `alfred` CLI | terminal prints the real content of `hello.txt`; tool call visible; **both vendors pass** | ⬜ |
+| 1 | Dev starts CLI, asks a question; agent calls a read-file tool and answers with the file content (run TWICE: Anthropic, then OpenAI) | `alfred chat` (in-process) | real `hello.txt` | `alfred` CLI | terminal prints the real content of `hello.txt`; tool call visible; **both vendors pass**. Test must force or prove `hashread` was called, not merely answer from prompt text. | ⬜ |
 | 2 | Dev does `import alfred` in a script, builds an agent, runs one turn, gets a result object | `uv run script.py` (in-process) | tmp dir | Python `import` | stdout shows the returned response object with complete fields (message + tool trace) | ⬜ |
 | 3 | Dev has two conversations; second asks "what did I just ask", agent recalls | `alfred chat --continue` | real `sessions.db` | `alfred` CLI | turn-2 answer correctly restates turn-1 content (FTS5 recall) | ⬜ |
 | 4 | Dev drops a skill into `./skills`; agent uses it in a fitting scenario | `alfred chat` | `./skills/<a-skill>/SKILL.md` | `alfred` CLI | skill visibly loaded (L0) and adopted in conversation; behavior matches the skill's description | ⬜ |
@@ -1439,7 +1537,7 @@ atomically-coupled group is noted.
 | 14 | Dev sets autonomy = `off`; agent's auto-loops (goal/distill/evolve) all halt | `alfred chat` | `agent.yaml` autonomy=off | `alfred` CLI | after off, goal no longer self-continues; distill/evolve don't trigger (log shows gate blocked) | ⬜ |
 | 15 | Dev has agent call `alfred-agent` skill to edit its own config; restart applies | `alfred chat` → restart | `agent.yaml` | `alfred` CLI | after restart new config in effect (e.g. model changed); agent's attempt to edit `autonomy` field is rejected | ⬜ |
 | 16 | Dev runs dream: after several sessions, memory is tidied (dedup/merge) | `alfred` daemon | real memory + session store | `alfred` CLI / server | after dream, memory file visibly tidied (redundant entries merged); **skills untouched by dream** | ⬜ |
-| 17 | Dev runs two turns in one session; verify turn-2 hits prompt cache (Anthropic + OpenAI each) | `alfred chat --continue` | real provider (each vendor once) | `alfred` CLI | turn-2 API usage shows cache-hit > 0 (`usage.prompt_tokens_details.cached_tokens` via LiteLLM) ≈ frozen-prefix tokens; turn-1 ≈ 0 | ⬜ |
+| 17 | Dev runs two turns in one session; verify turn-2 hits prompt cache (Anthropic + OpenAI each) | `alfred chat --continue` | real provider (each vendor once) | `alfred` CLI | turn-2 API usage shows cache-hit > 0 (`usage.prompt_tokens_details.cached_tokens` via LiteLLM) ≈ frozen-prefix tokens; turn-1 may show either cache creation or a warmed read depending on prior proxy state, but the follow-up turn must show read hits | ⬜ |
 | 18 | (L9 neg) A background subscriber raises during an async event; the loop survives and the error is visible | `alfred chat` (a deliberately-throwing test subscriber on `turn_end`) | — | `alfred` CLI | loop completes the turn; a `subscriber.error` event is emitted AND logged with the handler name; no crash | ⬜ |
 | 19 | (L9 neg) Iteration budget is exhausted mid-turn (incl. under a subagent); agent stops cleanly | `alfred chat` with a tiny `budget.total_cap` | — | `alfred` CLI | `budget_exhausted` fires; loop returns a clean budget-stop message (not a stack trace); ledger reconciles (`total_remaining + Σledgers == total_cap`) | ⬜ |
 | 20 | (L9 neg) A fusion worker times out; quorum logic decides the outcome | `alfred chat` | `agent.yaml` fusion with one worker pointed at an unreachable/slow endpoint, `quorum: 2` | `alfred` CLI | slow worker hits `per_worker_timeout_s`, logged WARNING; with quorum unmet a `FusionQuorumError` surfaces as a clean model-error (not a hang); with quorum met, vote proceeds on survivors | ⬜ |
