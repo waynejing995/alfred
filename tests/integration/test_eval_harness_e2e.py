@@ -19,10 +19,11 @@ arms:
       model:
         type: mock
     varies: []
-tasks:
+task_set:
   - id: t1
     prompt: hello
-    expected: "mock: hello"
+    target: "mock: hello"
+repeats: 2
 """,
         encoding="utf-8",
     )
@@ -38,4 +39,4 @@ tasks:
 
     assert payload["arms"]["baseline"]["score"]["pass_rate"] == 1.0
     assert payload["arms"]["baseline"]["cost_tokens"] > 0
-
+    assert payload["repeats"] == 2

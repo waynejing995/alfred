@@ -228,7 +228,7 @@ atomically-coupled group is noted.
   **Verification:**
   - `MockProvider` drives a turn with no network; all owned types round-trip via pydantic.
 
-  **Real e2e test:** `tests/e2e/test_mock_provider_e2e.py` — construct a real `Agent` with
+  **Integration/regression test:** `tests/integration/test_mock_provider_e2e.py` — construct a real `Agent` with
   `MockProvider` (no network) and run one real turn through the actual public API; assert the
   returned `ModelResponse` has populated `message` + `usage` fields. Proves the type/ABC contract
   works end-to-end through the real facade, not just in isolation.
@@ -279,7 +279,7 @@ atomically-coupled group is noted.
   **Verification:**
   - Both dispatch paths behave per policy; `subscriber.error` visible; serialization generic.
 
-  **Real e2e test:** `tests/e2e/test_event_bus_e2e.py` — instantiate a real `EventBus`, subscribe
+  **Integration/regression test:** `tests/integration/test_event_bus_e2e.py` — instantiate a real `EventBus`, subscribe
   one sync-veto handler that returns a veto and one async-isolated handler that raises, then emit a
   real event. Assert the veto stops downstream dispatch, the raising background subscriber produces a
   `subscriber.error` event, and the bus stays live for a subsequent emit.
@@ -367,7 +367,7 @@ atomically-coupled group is noted.
   - Prefix frozen within an epoch; cache field names match verified spec; layered merge order
     is global→nearest; `-v` shows the resolved-instruction manifest.
 
-  **Real e2e test:** `tests/e2e/test_instruction_layering_e2e.py` — build a temp dir tree with a
+  **Integration/regression test:** `tests/integration/test_instruction_layering_e2e.py` — build a temp dir tree with a
   global `~/.alfred/AGENTS.md` and a project `./AGENTS.md` inside a real git repo, then run the real
   `InstructionResolver`. Assert the merged frozen prefix contains both layers in nearest-wins order,
   the fingerprint is stable across two resolves, and an over-cap layer logs a WARNING yet keeps its
@@ -425,7 +425,7 @@ atomically-coupled group is noted.
   **Verification:**
   - Only `litellm_provider.py` imports litellm (grep regression test); usage fields populate.
 
-  **Real e2e test:** `tests/e2e/test_litellm_provider_e2e.py` — drive a real `LiteLLMProvider`
+  **Integration/regression test:** `tests/integration/test_litellm_provider_e2e.py` — drive a real `LiteLLMProvider`
   against the local proxy loaded from the real local config files; no cassette for the live e2e.
   Assert the response round-trips into Alfred types and usage fields are readable. Add a grep
   assertion that only `litellm_provider.py` imports `litellm` anywhere in the package.
@@ -466,7 +466,7 @@ atomically-coupled group is noted.
   **Verification:**
   - Two-counter reconcile invariant holds under interleaved reserve/refund across agent_ids.
 
-  **Real e2e test:** `tests/e2e/test_iteration_budget_e2e.py` — run a real `IterationBudget` inside
+  **Integration/regression test:** `tests/integration/test_iteration_budget_e2e.py` — run a real `IterationBudget` inside
   an asyncio loop with interleaved reserve/refund calls across several distinct `agent_id`s. Assert
   the `reconciles()` invariant holds at every step and that exhausting the budget fires a real
   `budget_exhausted` event.
@@ -532,7 +532,7 @@ atomically-coupled group is noted.
   - All 5 registries register/lookup; `_dispatch` enforces allow/ask/deny composed with
     autonomy; strictest-merge across the 3 sites holds; minimal `AgentConfig` builds a Tier-0 agent.
 
-  **Real e2e test:** `tests/e2e/test_permission_gate_e2e.py` — wire real tool/permission registries
+  **Integration/regression test:** `tests/integration/test_permission_gate_e2e.py` — wire real tool/permission registries
   to the real `PermissionResolver` and dispatch a tool through the real `_dispatch` under composed
   allow/ask/deny rules. Assert `deny` hard-blocks even when autonomy is `auto`, and that an `ask`
   rule resolves to `deny` when running headless (no interactive responder).
@@ -603,7 +603,7 @@ atomically-coupled group is noted.
   - `alfred chat` answers a real question using `hashread`; `import alfred` returns a result object;
     all three `--output-format` modes produce well-formed output from the same event stream.
 
-  **Real e2e test:** `tests/e2e/test_tier0_gate.py` (or split equivalents) — cover four real paths:
+  **Integration/regression test:** `tests/integration/test_tier0_gate.py` (or split equivalents) — cover four real paths:
   (1) SDK/loop/tool path with a scripted `MockProvider` forcing a `hashread` call against a temp file
   and asserting `LINE:HASH|content` in the tool result; (2) provider-message inspection proving
   layered instructions are actually assembled into the system prefix and cache breakpoint; (3) real
@@ -671,7 +671,7 @@ atomically-coupled group is noted.
     works on the current platform or the unit is explicitly marked fallback-only; fff fallback chain
     works; web_fetch SSRF denylist blocks internal addresses; hashedit rejects stale edits.
 
-  **Real e2e test:** `tests/e2e/test_tool_baseline_e2e.py` — exercise the real tools end-to-end:
+  **Integration/regression test:** `tests/integration/test_tool_baseline_e2e.py` — exercise the real tools end-to-end:
   `hashedit` a temp file then mutate it externally and assert the stale edit is rejected; run the
   bundled `fff` binary over a temp tree and assert backend=`fff` plus ranking/frecency behavior
   (separate fallback test covers rg/python); assert a `bash` deny pattern blocks; and assert a
@@ -743,7 +743,7 @@ atomically-coupled group is noted.
   - Store-level: FTS5 `search` returns ranked hits with snippets and project scoping holds.
     Runtime-level row #3 is not complete until CLI/Agent `--continue` is wired to this store.
 
-  **Real e2e test:** `tests/e2e/test_session_store_e2e.py` — open a real SQLite `sessions.db` in a
+  **Integration/regression test:** `tests/integration/test_session_store_e2e.py` — open a real SQLite `sessions.db` in a
   temp dir and write two sessions under two different `project_id`s. Assert a `WHERE project_id`
   query isolates each project's turns and that an FTS5 search finds the turn text; then drop the
   `WHERE` clause and assert cross-project search returns both. Add a later CLI e2e for
@@ -798,7 +798,7 @@ atomically-coupled group is noted.
   - trace separate from session; replay set reconstructable; seal-once under cancel. Runtime
     trace-capture verification is required before consumers (distill/evolve/dream) rely on it.
 
-  **Real e2e test:** `tests/e2e/test_trace_store_e2e.py` — write a real trajectory to a real
+  **Integration/regression test:** `tests/integration/test_trace_store_e2e.py` — write a real trajectory to a real
   `trace.db` + JSONL in a temp dir while cancelling mid-write. Assert the terminal seal lands exactly
   once (no duplicate JSONL line for the trajectory) and that `replay_set` returns scored rows for
   the sealed trajectory. Add a loop-driven e2e that runs a real tool call and verifies trace rows
@@ -858,7 +858,7 @@ atomically-coupled group is noted.
     facts do not leak; swappable interface honored; `Agent` frozen prefix receives memory facts
     when a memory provider is configured.
 
-  **Real e2e test:** `tests/e2e/test_memory_store_e2e.py` — populate a real memory store (files +
+  **Integration/regression test:** `tests/integration/test_memory_store_e2e.py` — populate a real memory store (files +
   index) in a temp dir with `core/` notes and project-scoped facts, then call the real `prefetch`
   and a real `Agent` session_start. Assert `core/` is always returned, RRF top-k facts are filtered
   to the requested `project_id` (facts from other projects excluded), and those facts appear in the
@@ -918,7 +918,7 @@ atomically-coupled group is noted.
   - precedence + shadow WARNING; `.versions/` invisible; atomic writes; `allowed-tools` enforced;
     skill L0 is actually injected into the frozen prefix when the loader is configured.
 
-  **Real e2e test:** `tests/e2e/test_skill_loader_writer_e2e.py` — set up real multi-root skill dirs
+  **Integration/regression test:** `tests/integration/test_skill_loader_writer_e2e.py` — set up real multi-root skill dirs
   in temp dirs with a same-name skill in two roots; assert the loader logs a shadow WARNING and
   skips `.versions/`. Then have the real writer add a skill via atomic `os.replace` + manifest;
   hand-edit a skill file on disk and assert the edited active `SKILL.md` is what loads (origin stays
@@ -968,7 +968,7 @@ atomically-coupled group is noted.
   **Verification:**
   - worker isolated (no parent context leak); budget ledgers reconcile; handoff = sole coupling.
 
-  **Real e2e test:** `tests/e2e/test_subagent_handoff_e2e.py` — use the real `Spawner`: an
+  **Integration/regression test:** `tests/integration/test_subagent_handoff_e2e.py` — use the real `Spawner`: an
   orchestrator spawns an isolated worker with a scoped tool set. Assert the worker raises
   `ToolScopeError` when it tries to call a tool outside its scope, and that the orchestrator and
   worker budget ledgers reconcile after the handoff completes.
@@ -1011,7 +1011,7 @@ atomically-coupled group is noted.
   **Verification:**
   - no auto-loop constructible ungated; off halts everything; self-edit of autonomy rejected.
 
-  **Real e2e test:** `tests/e2e/test_autonomy_gate_e2e.py` — assert constructing a real auto-loop
+  **Integration/regression test:** `tests/integration/test_autonomy_gate_e2e.py` — assert constructing a real auto-loop
   without an `AutonomyGate` raises at build time; with a gate set to `autonomy=off`, run the loop and
   assert it halts before any self-continuation; and assert a tool attempting to self-edit the
   `autonomy` field is rejected by the gate.
@@ -1056,7 +1056,7 @@ atomically-coupled group is noted.
   **Verification:**
   - layered merge correct; no plaintext secret possible; 2-phase validation catches bad type/params.
 
-  **Real e2e test:** `tests/e2e/test_agentconfig_layering_e2e.py` — run real `AgentConfig.from_yaml`
+  **Integration/regression test:** `tests/integration/test_agentconfig_layering_e2e.py` — run real `AgentConfig.from_yaml`
   over 3 layered temp config files plus environment overrides. Assert `deep_merge` precedence
   (highest layer wins per key), that `${ENV}`/`env_key` references resolve from real env vars, and
   that a plaintext `api_key` in a file crashes at load.
@@ -1101,7 +1101,7 @@ atomically-coupled group is noted.
   **Verification:**
   - self-continues toward goal; halts on no-progress/max-continuations; respects autonomy.
 
-  **Real e2e test:** `tests/e2e/test_goal_driver_e2e.py` — set an unsatisfiable goal in a real goal
+  **Integration/regression test:** `tests/integration/test_goal_driver_e2e.py` — set an unsatisfiable goal in a real goal
   store (JSON file) and run the real driver loop. Assert the SHA256 no-progress detector flips the
   goal status to `no_progress` after repeated identical states and that self-continuation halts
   instead of looping forever.
@@ -1145,7 +1145,7 @@ atomically-coupled group is noted.
   **Verification:**
   - both vendors truly called; quorum/timeout/judge-fallback behave; tool-call vote verbatim.
 
-  **Real e2e test:** `tests/e2e/test_fusion_provider_e2e.py` — run a real `FusionProvider` over two
+  **Integration/regression test:** `tests/integration/test_fusion_provider_e2e.py` — run a real `FusionProvider` over two
   `MockProvider`s where one is deliberately slow/timeout. Assert quorum logic resolves the surviving
   responses, that a forced judge failure falls back to the documented code path, and that a
   tool-call vote returns one worker's response verbatim.
@@ -1185,7 +1185,7 @@ atomically-coupled group is noted.
   **Verification:**
   - mcp tools in one dispatch path; FILO teardown clean; secrets via env_key.
 
-  **Real e2e test:** `tests/e2e/test_mcp_manager_e2e.py` — launch a real tiny stdio MCP server as a
+  **Integration/regression test:** `tests/integration/test_mcp_manager_e2e.py` — launch a real tiny stdio MCP server as a
   subprocess and connect to it via the real `MCPManager`. Assert its advertised tool registers in
   the tool registry and is actually callable through the manager, and that FILO teardown across
   multiple tasks completes with no `RuntimeError`.
@@ -1226,7 +1226,7 @@ atomically-coupled group is noted.
   **Verification:**
   - parallel mining, conflict-free merge, gated write.
 
-  **Real e2e test:** `tests/e2e/test_distill_e2e.py` — seed a real `trace.db` with a batch of traces
+  **Integration/regression test:** `tests/integration/test_distill_e2e.py` — seed a real `trace.db` with a batch of traces
   and run the real distill pass. Assert it produces a proposal that is gated (nothing written to the
   skill store until accept) and that the distill high-water mark persisted in `trace.db` survives a
   process restart (re-running distill does not reprocess sealed traces).
@@ -1273,7 +1273,7 @@ atomically-coupled group is noted.
   **Verification:**
   - variant scoring via shared scorer; gated merge; revert works.
 
-  **Real e2e test:** `tests/e2e/test_evolve_e2e.py` — take a real skill with a recorded trace replay
+  **Integration/regression test:** `tests/integration/test_evolve_e2e.py` — take a real skill with a recorded trace replay
   set and run the real evolve pass. Assert a variant is scored via `score_rollouts`, that a gated
   merge bumps the skill version by one, and that a revert restores the prior skill directory byte-
   for-byte.
@@ -1311,7 +1311,7 @@ atomically-coupled group is noted.
   **Verification:**
   - memory tidied; skills provably untouched (no skill-store dep injected); archive reversible.
 
-  **Real e2e test:** `tests/e2e/test_dream_e2e.py` — populate a real memory store with redundant and
+  **Integration/regression test:** `tests/integration/test_dream_e2e.py` — populate a real memory store with redundant and
   stale facts and run the real dream pass. Assert redundant facts are merged, decayed facts are moved
   into `facts/.archive/` (not deleted), and that the skill store is provably untouched (no skill
   dependency injected and skill file hashes unchanged).
@@ -1353,7 +1353,7 @@ atomically-coupled group is noted.
   **Verification:**
   - SSE carries enough to render; replay output matches CLI; core untouched.
 
-  **Real e2e test:** `tests/e2e/test_server_sse_replay_e2e.py` — start the real `agentkit-server`,
+  **Integration/regression test:** `tests/integration/test_server_sse_replay_e2e.py` — start the real `agentkit-server`,
   `curl -N` the SSE `/events` stream for one turn capturing the event log, then run the real replay
   script over that log. Assert the reconstructed text matches the text produced by running the same
   turn through the direct CLI.
@@ -1391,7 +1391,7 @@ atomically-coupled group is noted.
   **Verification:**
   - cron runs headless; fresh session per tick; output written.
 
-  **Real e2e test:** `tests/e2e/test_cron_e2e.py` — start the real server daemon with a cron job
+  **Integration/regression test:** `tests/integration/test_cron_e2e.py` — start the real server daemon with a cron job
   configured to fire immediately. Assert a `cron/output/<job>/<ts>.md` file appears containing the
   real run result and that two consecutive ticks each run in a fresh session (distinct session ids,
   no carried-over conversation state).
@@ -1435,7 +1435,7 @@ atomically-coupled group is noted.
   **Verification:**
   - A/B via config; shared scorer with evolve; parity guard; cost from real Usage.
 
-  **Real e2e test:** `tests/e2e/test_eval_harness_e2e.py` — run the real `alfred eval run` over a
+  **Integration/regression test:** `tests/integration/test_eval_harness_e2e.py` — run the real `alfred eval run` over a
   2-arm experiment (kernel-only vs +subsystem) using `MockProvider`-backed tasks. Assert per-arm
   scores and a cost delta are produced, and that the parity guard crashes when the two arms differ
   on more than one axis.
@@ -1478,7 +1478,7 @@ atomically-coupled group is noted.
   **Verification:**
   - self-edit applies on restart; autonomy self-edit blocked; wayne-* ingested.
 
-  **Real e2e test:** `tests/e2e/test_bundled_self_edit_e2e.py` — run the real bundled `alfred-agent`
+  **Integration/regression test:** `tests/integration/test_bundled_self_edit_e2e.py` — run the real bundled `alfred-agent`
   and have it self-edit its config to change the active model, then restart the process and assert
   the new model is in effect on the next turn. Then attempt a self-edit of the `autonomy` field and
   assert it is rejected.
@@ -1496,9 +1496,9 @@ atomically-coupled group is noted.
 > LLMs across BOTH vendors (Anthropic + OpenAI/Azure via local env / key-proxy
 > `127.0.0.1:8888`). Unit/integration tests in the units above are NOT this gate.
 >
-> **Real-LLM env sourcing (real, verified 2026-06-15).** Real-LLM e2e rows + every per-unit
-> "Real e2e test" that needs a live model load credentials from the real local files/env (do
-> NOT hard-code or invent keys):
+> **Real-LLM env sourcing (real, verified 2026-06-15).** Runtime E2E rows executed by
+> `wayne-verify` load credentials from the real local files/env (do NOT hard-code or invent keys).
+> Per-unit files under `tests/integration/` may use mocks/direct stores and are not this gate:
 > - **Anthropic** ← `~/.claude/settings.json` `env` block for `ANTHROPIC_BASE_URL=http://127.0.0.1:8888`
 >   and `ANTHROPIC_API_KEY`; model id from `ALFRED_REAL_MODEL` or current process
 >   `ANTHROPIC_DEFAULT_*_MODEL`. The Claude settings file is the base-url/key source, not the model
@@ -1513,11 +1513,12 @@ atomically-coupled group is noted.
 > - **SSRF vs proxy boundary:** the `web_fetch` SSRF guard denies `127.0.0.1:8888` (a TOOL egress),
 >   but the provider layer (LiteLLMProvider `base_url`) legitimately reaches the same proxy — two
 >   different egress paths; the SSRF denylist governs the tool only, never the provider.
-> - **Verify profile vs local regression:** normal `uv run pytest` may use mocks and may skip
->   unavailable live-provider tests for local development. `wayne-verify` uses the real-case profile
->   and must treat rows #1/#17/#29 as non-skippable: Anthropic and OpenAI/Azure both run, row #1
->   executes a real CLI hashread tool call, row #17 proves cache hits, row #29 proves stream deltas
->   and replay.
+> - **Verify profile vs local regression:** normal `uv run pytest` runs unit/integration tests and
+>   skips live-provider tests by default. `wayne-verify` runs `ALFRED_RUN_REAL_E2E=1 uv run pytest
+>   tests/e2e` plus any row-specific setup, and must treat rows #1/#17/#29 as non-skippable:
+>   Anthropic and OpenAI/Azure both run, row #1 executes a real CLI hashread tool call, row #17
+>   proves cache hits, row #29 proves stream deltas and replay. Every file under `tests/e2e/`
+>   must issue at least one real LLM call.
 
 | # | User path | Env: process | Env: data | Env: entrypoint | Observable (pass = ?) | Status |
 |---|-----------|--------------|-----------|-----------------|----------------------|--------|

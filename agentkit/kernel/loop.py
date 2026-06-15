@@ -171,18 +171,20 @@ async def dispatch_tool(ctx: TurnCtx, call: ToolCall) -> ToolResult:
 
 
 async def _model_response(ctx: TurnCtx, *, stream: bool) -> ModelResponse:
+    tool_choice = ctx.tool_choice
+    ctx.tool_choice = None
     if not stream:
         return await ctx.provider.complete(
             ctx.assemble_messages(),
             tools=ctx.tools.tool_defs(),
-            tool_choice=ctx.tool_choice,
+            tool_choice=tool_choice,
         )
 
     final_response: ModelResponse | None = None
     async for delta in ctx.provider.stream(
         ctx.assemble_messages(),
         tools=ctx.tools.tool_defs(),
-        tool_choice=ctx.tool_choice,
+        tool_choice=tool_choice,
     ):
         if delta.text:
             await ctx.bus.emit(StreamDeltaEvent(text=delta.text))

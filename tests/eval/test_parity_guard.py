@@ -10,9 +10,8 @@ def test_parity_guard_rejects_unlisted_differences():
             Arm(name="baseline", config={"model": {"type": "mock"}}),
             Arm(name="changed", config={"model": {"type": "litellm"}}, varies=[]),
         ],
-        tasks=[EvalTask(id="t1", prompt="hello", expected="mock: hello")],
+        task_set=[EvalTask(id="t1", prompt="hello", target="mock: hello")],
     )
 
     with pytest.raises(ValueError, match="differs outside varies"):
         run_experiment(experiment)
-
